@@ -1,18 +1,15 @@
 import "dotenv/config";
 import { Api } from "grammy";
-async function main() {
-  const token = process.env.TELEGRAM_BOT_TOKEN;
-  if (!token) throw new Error("Set TELEGRAM_BOT_TOKEN");
-  const api = new Api(token);
-  await api.setMyCommands([
-    { command: "start", description: "Начать подбор обучения" },
-    { command: "menu", description: "Главное меню" },
-    { command: "id", description: "Узнать Telegram ID" },
-  ]);
-  const info = await api.getMe();
-  console.info(`Bot configured: @${info.username}`);
-}
-main().catch((error) => {
-  console.error(error);
-  process.exitCode = 1;
-});
+import { runtimeConfig } from "../src/lib/config";
+const config = runtimeConfig();
+if (!config.TELEGRAM_BOT_TOKEN) throw new Error("Set TELEGRAM_BOT_TOKEN");
+new Api(config.TELEGRAM_BOT_TOKEN)
+  .setMyCommands([
+    { command: "admin", description: "Админ-панель" },
+    { command: "cancel", description: "Отменить действие" },
+  ])
+  .then(() => console.info("Admin commands configured"))
+  .catch(() => {
+    console.error("Telegram command setup failed");
+    process.exitCode = 1;
+  });

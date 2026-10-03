@@ -8,6 +8,7 @@ datasource db {
 }
 
 enum Role {
+  OWNER
   ADMIN
   MANAGER
 }
@@ -86,7 +87,7 @@ enum EnrollmentStatus {
 }
 
 enum AccessStatus {
-  WAITING
+  PENDING
   CREATING
   GRANTED
   FAILED
@@ -122,19 +123,20 @@ enum ReminderType {
 }
 
 model AdminUser {
-  id               String           @id @default(cuid())
+  id               String                  @id @default(cuid())
   name             String
-  email            String?          @unique
-  telegramId       BigInt?          @unique
-  passwordHash     String
-  role             Role             @default(MANAGER)
-  active           Boolean          @default(true)
-  createdAt        DateTime         @default(now())
-  updatedAt        DateTime         @updatedAt
+  email            String?                 @unique
+  telegramId       BigInt?                 @unique
+  passwordHash     String?
+  role             Role                    @default(MANAGER)
+  active           Boolean                 @default(true)
+  createdAt        DateTime                @default(now())
+  updatedAt        DateTime                @updatedAt
   sessions         AdminSession[]
   reviewedPayments Payment[]
   managerRequests  ManagerRequest[]
   auditLogs        AuditLog[]
+  conversation     AdminConversationState?
 }
 
 model AdminSession {
@@ -187,16 +189,17 @@ model User {
 }
 
 model CourseCategory {
-  id        String               @id @default(cuid())
-  slug      String               @unique
-  title     String
-  active    Boolean              @default(true)
-  sortOrder Int                  @default(0)
-  createdAt DateTime             @default(now())
-  updatedAt DateTime             @updatedAt
-  courses   Course[]
-  users     User[]
-  rules     RecommendationRule[]
+  id          String               @id @default(cuid())
+  slug        String               @unique
+  title       String
+  description String?
+  active      Boolean              @default(true)
+  sortOrder   Int                  @default(0)
+  createdAt   DateTime             @default(now())
+  updatedAt   DateTime             @updatedAt
+  courses     Course[]
+  users       User[]
+  rules       RecommendationRule[]
 }
 
 model Course {
@@ -206,8 +209,11 @@ model Course {
   shortDescription  String
   fullDescription   String
   imageUrl          String?
+  imageFileId       String?
+  imageFileType     String?
   demoVideoUrl      String?
   demoFileId        String?
+  demoFileType      String?
   program           String
   duration          String
   categoryId        String
@@ -216,6 +222,7 @@ model Course {
   telegramChannelId String?
   priceKZT          Decimal                @db.Decimal(12, 2)
   priceRUB          Decimal                @db.Decimal(12, 2)
+  sortOrder         Int                    @default(0)
   createdAt         DateTime               @default(now())
   updatedAt         DateTime               @updatedAt
   rules             RecommendationRule[]
@@ -258,28 +265,28 @@ model CourseRecommendation {
 }
 
 model Payment {
-  id              String        @id @default(cuid())
-  userId          String
-  user            User          @relation(fields: [userId], references: [id])
-  courseId        String
-  course          Course        @relation(fields: [courseId], references: [id])
-  amount          Decimal       @db.Decimal(12, 2)
-  currency        Currency
-  country         Country
-  paymentMethod   String
-  instruction     String
-  requisites      String
-  status          PaymentStatus @default(PENDING)
-  activeKey       String?       @unique
-  receiptFileId   String?
-  receiptFileType String?
-  receiptRevision Int           @default(0)
-  createdAt       DateTime      @default(now())
-  reviewedAt      DateTime?
-  reviewedBy      String?
-  reviewer        AdminUser?    @relation(fields: [reviewedBy], references: [id])
-  rejectionReason String?
-  enrollment      Enrollment?
+  id                String        @id @default(cuid())
+  userId            String
+  user              User          @relation(fields: [userId], references: [id])
+  courseId          String
+  course            Course        @relation(fields: [courseId], references: [id])
+  amount            Decimal       @db.Decimal(12, 2)
+  currency          Currency
+  country           Country
+  paymentMethod     String
+  instruction       String
+  requisites        String
+  status            PaymentStatus @default(PENDING)
+  activeKey         String?       @unique
+  receiptFileId     String?
+  receiptType       String?       @map("receiptFileType")
+  receiptRevision   Int           @default(0)
+  createdAt         DateTime      @default(now())
+  reviewedAt        DateTime?
+  reviewedByAdminId String?       @map("reviewedBy")
+  reviewer          AdminUser?    @relation(fields: [reviewedByAdminId], references: [id])
+  rejectionReason   String?
+  enrollment        Enrollment?
 
   @@index([status, currency, createdAt])
   @@index([userId, courseId])
@@ -294,7 +301,7 @@ model Enrollment {
   paymentId          String           @unique
   payment            Payment          @relation(fields: [paymentId], references: [id])
   status             EnrollmentStatus @default(ACTIVE)
-  accessStatus       AccessStatus     @default(WAITING)
+  accessStatus       AccessStatus     @default(PENDING)
   accessGrantedAt    DateTime?
   telegramInviteLink String?          @unique
   inviteExpiresAt    DateTime?
@@ -309,18 +316,18 @@ model Enrollment {
 }
 
 model ManagerRequest {
-  id         String               @id @default(cuid())
-  userId     String
-  user       User                 @relation(fields: [userId], references: [id])
-  courseId   String?
-  course     Course?              @relation(fields: [courseId], references: [id])
-  status     ManagerRequestStatus @default(NEW)
-  message    String
-  stage      FunnelStage
-  assignedTo String?
-  assignee   AdminUser?           @relation(fields: [assignedTo], references: [id])
-  createdAt  DateTime             @default(now())
-  updatedAt  DateTime             @updatedAt
+  id                String               @id @default(cuid())
+  userId            String
+  user              User                 @relation(fields: [userId], references: [id])
+  courseId          String?
+  course            Course?              @relation(fields: [courseId], references: [id])
+  status            ManagerRequestStatus @default(NEW)
+  message           String
+  stage             FunnelStage
+  assignedToAdminId String?              @map("assignedTo")
+  assignee          AdminUser?           @relation(fields: [assignedToAdminId], references: [id])
+  createdAt         DateTime             @default(now())
+  updatedAt         DateTime             @updatedAt
 
   @@index([status, createdAt])
 }
@@ -373,23 +380,50 @@ model Setting {
 }
 
 model AuditLog {
-  id        String    @id @default(cuid())
-  adminId   String
-  admin     AdminUser @relation(fields: [adminId], references: [id])
-  action    String
-  entity    String
-  entityId  String
-  metadata  Json      @default("{}")
-  createdAt DateTime  @default(now())
+  id         String    @id @default(cuid())
+  adminId    String
+  admin      AdminUser @relation(fields: [adminId], references: [id])
+  action     String
+  entityType String    @map("entity")
+  entityId   String
+  metadata   Json      @default("{}")
+  createdAt  DateTime  @default(now())
 
-  @@index([entity, entityId, createdAt])
+  @@index([entityType, entityId, createdAt])
 }
 
 model TelegramBotError {
-  id        String   @id @default(cuid())
-  context   String
-  message   String
-  createdAt DateTime @default(now())
+  id         String    @id @default(cuid())
+  errorType  String    @default("UNKNOWN")
+  context    Json
+  message    String
+  stack      String?
+  createdAt  DateTime  @default(now())
+  resolvedAt DateTime?
+}
+
+model AdminConversationState {
+  id        String    @id @default(cuid())
+  adminId   String    @unique
+  admin     AdminUser @relation(fields: [adminId], references: [id], onDelete: Cascade)
+  flowType  String
+  step      Int       @default(0)
+  nonce     String    @unique
+  payload   Json      @default("{}")
+  expiresAt DateTime
+  updatedAt DateTime  @updatedAt
+}
+
+model PaymentMethodSetting {
+  id          String   @id @default(cuid())
+  country     Country  @unique
+  currency    Currency
+  enabled     Boolean  @default(false)
+  title       String
+  instruction String   @default("")
+  requisites  String   @default("")
+  updatedAt   DateTime @updatedAt
+  updatedBy   String?
 }
 
 model OutboxJob {

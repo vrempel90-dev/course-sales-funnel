@@ -1,269 +1,111 @@
-import { Country, PrismaClient } from "@prisma/client";
+import { PrismaClient } from "@prisma/client";
 import { AppError } from "../lib/errors";
 import { atomic } from "./transaction";
-import { event } from "./events";
-import { paymentSettings, scheduleReminder } from "./settings";
+import { requireAdmin } from "./auth";
+import { audit } from "./admin";
 export class PaymentService {
-  constructor(private db: PrismaClient) {}
-  async create(userId: string, courseId: string, country: Country) {
-    return atomic(this.db, async (tx) => {
-      const user = await tx.user.findUniqueOrThrow({ where: { id: userId } });
-      if (user.selectedCourseId !== courseId)
-        throw new AppError("Сначала выберите курс");
-      const owned = await tx.enrollment.findUnique({
-        where: { userId_courseId: { userId, courseId } },
-      });
-      if (owned)
-        throw new AppError(
-          "Этот курс уже приобретён. Откройте «Мои курсы» или обратитесь к менеджеру.",
-        );
-      const course = await tx.course.findFirst({
-        where: { id: courseId, status: "ACTIVE", category: { active: true } },
-      });
-      if (!course) throw new AppError("Курс больше недоступен");
-      const settings = await paymentSettings(tx, country);
-      if (!settings.enabled)
-        throw new AppError(
-          "Оплата для этой страны пока не настроена. Напишите менеджеру.",
-        );
-      const activeKey = `${userId}:${courseId}`;
-      let payment = await tx.payment.findUnique({ where: { activeKey } });
-      if (
-        payment &&
-        payment.country !== country &&
-        payment.status === "PENDING" &&
-        user.conversationStep === "COUNTRY"
-      ) {
-        await tx.payment.update({
-          where: { id: payment.id },
-          data: { status: "CANCELLED", activeKey: null },
-        });
-        payment = null;
-      }
-      if (!payment) {
-        if (user.conversationStep !== "COUNTRY")
-          throw new AppError("Откройте выбор страны заново");
-        payment = await tx.payment.create({
-          data: {
-            userId,
-            courseId,
-            country,
-            activeKey,
-            currency: country === "KZ" ? "KZT" : "RUB",
-            amount: country === "KZ" ? course.priceKZT : course.priceRUB,
-            paymentMethod: settings.title,
-            instruction: settings.instruction,
-            requisites: settings.requisites,
-          },
-        });
-        await event(
-          tx,
-          userId,
-          "payment_started",
-          courseId,
-          { paymentId: payment.id },
-          "PAYMENT_STARTED",
-        );
-        await scheduleReminder(tx, userId, "PAYMENT", payment.id);
-      }
-      await tx.user.update({
-        where: { id: userId },
-        data: {
-          activePaymentId: payment.id,
-          conversationStep: "IDLE",
-          currentFunnelStage:
-            payment.status === "PENDING_REVIEW"
-              ? "PAYMENT_REVIEW"
-              : "WAITING_PAYMENT",
-        },
-      });
-      return payment;
-    });
-  }
-  async waitReceipt(userId: string, paymentId: string) {
-    return atomic(this.db, async (tx) => {
-      const payment = await tx.payment.findFirst({
-        where: {
-          id: paymentId,
-          userId,
-          status: { in: ["PENDING", "REJECTED"] },
-        },
-      });
-      if (!payment) throw new AppError("Оплата уже проверяется или завершена");
-      await tx.user.update({
-        where: { id: userId },
-        data: { activePaymentId: paymentId, conversationStep: "RECEIPT" },
-      });
-      return payment;
-    });
-  }
-  async receipt(userId: string, fileId: string, type: "photo" | "document") {
-    return atomic(this.db, async (tx) => {
-      const user = await tx.user.findUniqueOrThrow({ where: { id: userId } });
-      if (user.conversationStep !== "RECEIPT" || !user.activePaymentId)
-        throw new AppError(
-          "Нажмите «Я оплатил» у нужного платежа перед отправкой чека",
-        );
-      const payment = await tx.payment.findFirst({
-        where: {
-          id: user.activePaymentId,
-          userId,
-          status: { in: ["PENDING", "REJECTED"] },
-        },
-      });
-      if (!payment) throw new AppError("Этот чек уже отправлен на проверку");
-      const existing = await tx.payment.findUnique({
-        where: { activeKey: `${userId}:${payment.courseId}` },
-      });
-      if (existing && existing.id !== payment.id)
-        throw new AppError(
-          "Для этого курса есть другой активный платёж. Откройте «Мои курсы» или напишите менеджеру.",
-          409,
-        );
-      const next = await tx.payment.update({
-        where: { id: payment.id },
-        data: {
-          receiptFileId: fileId,
-          receiptFileType: type,
-          receiptRevision: { increment: 1 },
-          status: "PENDING_REVIEW",
-          activeKey: `${userId}:${payment.courseId}`,
-          reviewedAt: null,
-          reviewedBy: null,
-          rejectionReason: null,
-        },
-      });
-      await tx.user.update({
-        where: { id: userId },
-        data: { conversationStep: "IDLE" },
-      });
-      await event(
-        tx,
-        userId,
-        "payment_receipt_uploaded",
-        payment.courseId,
-        { paymentId: payment.id, revision: next.receiptRevision },
-        "PAYMENT_REVIEW",
-      );
-      await tx.outboxJob.create({
-        data: {
-          type: "PAYMENT_REVIEW",
-          entityId: payment.id,
-          dedupeKey: `receipt:${payment.id}:${next.receiptRevision}`,
-        },
-      });
-      await tx.reminder.updateMany({
-        where: {
-          userId,
-          type: "PAYMENT",
-          contextId: payment.id,
-          status: "PENDING",
-        },
-        data: { status: "CANCELLED" },
-      });
-      return next;
-    });
-  }
+  constructor(public db: PrismaClient) {}
   async review(
-    paymentId: string,
     adminId: string,
+    id: string,
     approve: boolean,
     reason?: string,
-    expectedRevision?: number,
+    nonce?: string,
   ) {
     return atomic(this.db, async (tx) => {
-      const admin = await tx.adminUser.findFirst({
-        where: { id: adminId, active: true, role: "ADMIN" },
-      });
-      if (!admin) throw new AppError("Недостаточно прав", 403);
-      const payment = await tx.payment.findUniqueOrThrow({
-        where: { id: paymentId },
-      });
+      await requireAdmin(tx, adminId, "payments", true);
+      if (nonce) {
+        if (
+          !(
+            await tx.adminConversationState.deleteMany({
+              where: { adminId, nonce, expiresAt: { gt: new Date() } },
+            })
+          ).count
+        )
+          throw new AppError("Мастер устарел");
+      }
+      const payment = await tx.payment.findUniqueOrThrow({ where: { id } });
+      if (approve && payment.status === "PAID") return payment;
       if (
-        expectedRevision !== undefined &&
-        expectedRevision !== payment.receiptRevision
+        !approve &&
+        payment.status === "REJECTED" &&
+        payment.rejectionReason === reason
       )
+        return payment;
+      if (payment.status !== "PENDING_REVIEW")
         throw new AppError(
-          "Чек изменился. Откройте последнее уведомление или обновите страницу.",
+          "Оплата уже обработана или ещё не передана на проверку",
           409,
         );
-      if (approve && payment.status === "PAID")
-        return tx.enrollment.findUniqueOrThrow({ where: { paymentId } });
-      if (!approve && payment.status === "REJECTED") return null;
-      if (payment.status !== "PENDING_REVIEW" || !payment.receiptFileId)
-        throw new AppError("На проверку должен быть отправлен чек", 409);
-      await tx.payment.update({
-        where: { id: paymentId },
+      if (!approve && (!reason?.trim() || reason.length > 1000))
+        throw new AppError("Укажите причину отклонения");
+      const updated = await tx.payment.update({
+        where: { id },
         data: {
           status: approve ? "PAID" : "REJECTED",
-          activeKey: null,
           reviewedAt: new Date(),
-          reviewedBy: adminId,
-          rejectionReason: approve
-            ? null
-            : reason?.trim() || "Оплату пока не удалось подтвердить",
+          reviewedByAdminId: adminId,
+          rejectionReason: approve ? null : reason,
+          activeKey: null,
         },
       });
-      await tx.auditLog.create({
-        data: {
-          adminId,
-          action: approve ? "PAYMENT_APPROVED" : "PAYMENT_REJECTED",
-          entity: "Payment",
-          entityId: paymentId,
-          metadata: {
-            receiptRevision: payment.receiptRevision,
-            receiptFileId: payment.receiptFileId,
-            reason: reason || "",
-            amount: payment.amount.toString(),
-            currency: payment.currency,
-          },
-        },
-      });
-      await event(
-        tx,
-        payment.userId,
-        approve ? "payment_confirmed" : "payment_rejected",
-        payment.courseId,
-        { paymentId },
-        approve ? "PAID" : undefined,
-      );
-      if (!approve) {
-        await tx.outboxJob.upsert({
+      if (approve) {
+        const old = await tx.enrollment.findUnique({
           where: {
-            dedupeKey: `rejected:${paymentId}:${payment.receiptRevision}`,
-          },
-          update: {},
-          create: {
-            type: "PAYMENT_REJECTED",
-            entityId: paymentId,
-            dedupeKey: `rejected:${paymentId}:${payment.receiptRevision}`,
+            userId_courseId: {
+              userId: payment.userId,
+              courseId: payment.courseId,
+            },
           },
         });
-        return null;
+        if (!old)
+          await tx.enrollment.create({
+            data: {
+              userId: payment.userId,
+              courseId: payment.courseId,
+              paymentId: id,
+              status: "ACTIVE",
+              accessStatus: "PENDING",
+            },
+          });
+        else if (old.status === "REVOKED" || old.status === "PENDING")
+          await tx.enrollment.update({
+            where: { id: old.id },
+            data: {
+              status: "ACTIVE",
+              paymentId: id,
+              accessStatus: "PENDING",
+              accessGrantedAt: null,
+              joinedAt: null,
+              accessError: null,
+            },
+          });
+        await tx.user.update({
+          where: { id: payment.userId },
+          data: { currentFunnelStage: "PAID" },
+        });
       }
-      const enrollment = await tx.enrollment.create({
+      await audit(
+        tx,
+        adminId,
+        approve ? "PAYMENT_APPROVED" : "PAYMENT_REJECTED",
+        "Payment",
+        id,
+        {
+          reason: reason ?? null,
+          amount: payment.amount.toString(),
+          currency: payment.currency,
+        },
+      );
+      await tx.funnelEvent.create({
         data: {
           userId: payment.userId,
           courseId: payment.courseId,
-          paymentId,
-          status: "ACTIVE",
+          type: approve ? "payment_approved" : "payment_rejected",
+          metadata: { paymentId: id },
         },
       });
-      await event(tx, payment.userId, "enrollment_created", payment.courseId, {
-        enrollmentId: enrollment.id,
-      });
-      await tx.outboxJob.create({
-        data: {
-          type: "ACCESS",
-          entityId: enrollment.id,
-          dedupeKey: `access:${enrollment.id}`,
-        },
-      });
-      await tx.reminder.updateMany({
-        where: { userId: payment.userId, status: "PENDING" },
-        data: { status: "CANCELLED" },
-      });
-      return enrollment;
+      return updated;
     });
   }
 }

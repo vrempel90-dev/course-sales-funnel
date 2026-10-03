@@ -1,6 +1,7 @@
 import "dotenv/config";
 import { PrismaClient } from "@prisma/client";
-import { hashPassword } from "../src/lib/password";
+import { bootstrapOwner } from "../src/services/auth";
+import { defaultSettings } from "../src/services/schemas";
 const db = new PrismaClient();
 async function main() {
   const categories = [
@@ -27,99 +28,42 @@ async function main() {
     const category = await db.courseCategory.findUniqueOrThrow({
       where: { slug: categorySlug },
     });
-    const course = await db.course.upsert({
+    await db.course.upsert({
       where: { slug },
       update: {},
       create: {
         slug,
         title,
         categoryId: category.id,
-        shortDescription:
-          "Пример программы. Замените описание перед публикацией.",
+        shortDescription: "Пример программы. Замените перед активацией.",
         fullDescription:
-          "Демонстрационные данные для настройки каталога. Добавьте реальные описание, программу, демоурок, цены и Telegram-канал.",
-        program: "Теория\nПрактика\nРазбор вопросов",
+          "Демонстрационные данные. Укажите реальные описание, программу, демоурок, цены и Telegram-канал.",
+        program: "Теория\nПрактика\nВопросы",
         duration: "4 недели (пример)",
         priceKZT,
         priceRUB,
         status: "DRAFT",
       },
     });
-    if (
-      !(await db.recommendationRule.findFirst({
-        where: { courseId: course.id },
-      }))
-    )
-      await db.recommendationRule.create({
-        data: {
-          courseId: course.id,
-          categoryId: category.id,
-          experienceLevel: slug === "full-body" ? "BEGINNER" : null,
-          priority: 10,
-          matchMode: "ALL",
-        },
-      });
   }
-  const settings = {
-    "payment.KZ": {
-      enabled: false,
-      title: "Kaspi",
-      instruction: "",
-      requisites: "",
-    },
-    "payment.RU": {
-      enabled: false,
-      title: "Банковский перевод",
-      instruction: "",
-      requisites: "",
-    },
-    reminders: { enabled: false, demoHours: 24, paymentHours: 12 },
-    bot: {
-      adminChatId: process.env.TELEGRAM_ADMIN_CHAT_ID ?? "",
-      helpText:
-        "Для помощи нажмите «Задать вопрос». Оплату проверяет администратор вручную.",
-    },
-  };
-  for (const [key, value] of Object.entries(settings))
-    await db.setting.upsert({
-      where: { key },
+  for (const [country, currency, title] of [
+    ["KZ", "KZT", "Kaspi"],
+    ["RU", "RUB", "Банковский перевод"],
+  ] as const)
+    await db.paymentMethodSetting.upsert({
+      where: { country },
       update: {},
-      create: { key, value },
+      create: { country, currency, title, enabled: false },
     });
-  const email = process.env.ADMIN_INITIAL_EMAIL?.trim().toLowerCase();
-  const password = process.env.ADMIN_INITIAL_PASSWORD;
-  if (!email || !password) {
-    console.info(
-      "Seed data created. Set ADMIN_INITIAL_EMAIL/PASSWORD and rerun to create the first admin.",
-    );
-    return;
-  }
-  if (password.length < 12)
-    throw new Error("ADMIN_INITIAL_PASSWORD must be at least 12 characters");
-  if (!(await db.adminUser.findUnique({ where: { email } }))) {
-    const admin = await db.adminUser.create({
-      data: {
-        name: process.env.ADMIN_INITIAL_NAME || "Administrator",
-        email,
-        passwordHash: await hashPassword(password),
-        role: "ADMIN",
-        telegramId: process.env.ADMIN_INITIAL_TELEGRAM_ID
-          ? BigInt(process.env.ADMIN_INITIAL_TELEGRAM_ID)
-          : null,
-      },
-    });
-    await db.auditLog.create({
-      data: {
-        adminId: admin.id,
-        action: "ADMIN_CREATED",
-        entity: "AdminUser",
-        entityId: admin.id,
-      },
-    });
-    console.info(
-      "Initial admin created. Existing passwords are never reset by seed.",
-    );
-  }
+  await db.setting.upsert({
+    where: { key: "admin.settings" },
+    update: {},
+    create: { key: "admin.settings", value: defaultSettings },
+  });
+  await bootstrapOwner(db, process.env.OWNER_TELEGRAM_ID || undefined);
+  console.info(
+    "Seed complete: existing records preserved; sample courses are DRAFT.",
+  );
 }
 main()
   .catch((error) => {

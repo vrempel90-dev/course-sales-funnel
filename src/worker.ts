@@ -4,14 +4,15 @@ import { Prisma } from "@prisma/client";
 import type { Update } from "grammy/types";
 import { db } from "./database/client";
 import { runtimeConfig } from "./lib/config";
-import { safeError } from "./lib/errors";
+import { safeError, recordError } from "./lib/errors";
 import { createBot } from "./bot";
-import { GrammyGateway } from "./bot/gateway";
-import { AccessService } from "./services/access";
-import { JobService } from "./services/jobs";
+import { bootstrapOwner } from "./services/auth";
+import { healthServer } from "./health";
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-const owner = randomUUID();
+const leaseOwner = randomUUID();
 let running = true;
+const config = runtimeConfig();
+const server = healthServer(db, !!config.TELEGRAM_BOT_TOKEN);
 process.on("SIGINT", () => {
   running = false;
 });
@@ -22,114 +23,106 @@ async function lease() {
   await db.workerLease.upsert({
     where: { id: "bot-worker" },
     update: {},
-    create: { id: "bot-worker", owner, expiresAt: new Date(0) },
+    create: { id: "bot-worker", owner: leaseOwner, expiresAt: new Date(0) },
   });
   return (
     (
       await db.workerLease.updateMany({
         where: {
           id: "bot-worker",
-          OR: [{ owner }, { expiresAt: { lt: new Date() } }],
+          OR: [{ owner: leaseOwner }, { expiresAt: { lt: new Date() } }],
         },
-        data: { owner, expiresAt: new Date(Date.now() + 60000) },
+        data: { owner: leaseOwner, expiresAt: new Date(Date.now() + 60000) },
       })
     ).count > 0
   );
 }
 async function main() {
-  const config = runtimeConfig();
+  await db.$connect();
+  await bootstrapOwner(db, config.OWNER_TELEGRAM_ID);
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(config.PORT, "0.0.0.0", resolve);
+  });
   if (!config.TELEGRAM_BOT_TOKEN) {
     console.info(
-      "Telegram token absent: worker disabled; web admin and database remain available.",
+      "Telegram token absent: health server active; Telegram processing disabled.",
     );
-    while (running) await sleep(1000);
+    while (running) await sleep(500);
     return;
   }
-  if (
-    config.TELEGRAM_MODE === "webhook" &&
-    (!config.TELEGRAM_WEBHOOK_SECRET ||
-      config.TELEGRAM_WEBHOOK_SECRET.length < 32 ||
-      !config.APP_URL.startsWith("https://"))
-  )
-    throw new Error(
-      "Webhook requires HTTPS APP_URL and TELEGRAM_WEBHOOK_SECRET >=32 characters",
-    );
-  const bot = createBot(config.TELEGRAM_BOT_TOKEN, db);
-  await bot.init();
-  const telegram = new GrammyGateway(bot.api);
-  const jobs = new JobService(
+  if (!config.OWNER_TELEGRAM_ID)
+    throw new Error("OWNER_TELEGRAM_ID is required when Telegram is enabled");
+  const bot = createBot(
+    config.TELEGRAM_BOT_TOKEN,
     db,
-    telegram,
-    new AccessService(db, telegram, config.INVITE_TTL_HOURS),
+    config.TELEGRAM_BOT_USERNAME,
   );
-  // Renewal runs independently of Telegram calls; loss of the lease stops this process.
-  let hasLease = false;
+  await bot.init();
+  let hasLease = false,
+    configured = false;
   const heartbeat = setInterval(() => {
     if (hasLease)
       void lease()
         .then((ok) => {
           if (!ok) {
             running = false;
-            hasLease = false;
+            process.exitCode = 1;
           }
         })
         .catch(() => {
           running = false;
-          hasLease = false;
+          process.exitCode = 1;
         });
   }, 10000);
-  let configured = false;
   try {
     while (running) {
       if (!(await lease())) {
-        await sleep(5000);
+        await sleep(1000);
         continue;
       }
       hasLease = true;
       try {
         if (!configured) {
-          if (config.TELEGRAM_MODE === "webhook")
-            await bot.api.setWebhook(`${config.APP_URL}/api/telegram/webhook`, {
-              secret_token: config.TELEGRAM_WEBHOOK_SECRET,
-              allowed_updates: ["message", "callback_query", "chat_member"],
-            });
-          else await bot.api.deleteWebhook({ drop_pending_updates: false });
+          await bot.api.deleteWebhook({ drop_pending_updates: false });
+          await bot.api.setMyCommands([
+            { command: "admin", description: "Админ-панель" },
+            { command: "cancel", description: "Отменить действие" },
+          ]);
           configured = true;
         }
-        if (config.TELEGRAM_MODE === "polling") {
-          const offset = Number(
-            (await db.setting.findUnique({ where: { key: "telegram.offset" } }))
-              ?.value ?? 0,
-          );
-          const updates = await bot.api.getUpdates({
-            offset,
-            timeout: 1,
-            limit: 100,
-            allowed_updates: ["message", "callback_query", "chat_member"],
-          });
-          for (const update of updates)
-            await db.$transaction(async (tx) => {
-              await tx.telegramUpdate.upsert({
-                where: { id: BigInt(update.update_id) },
-                update: {},
-                create: {
-                  id: BigInt(update.update_id),
-                  payload: update as unknown as Prisma.InputJsonValue,
-                },
-              });
-              await tx.setting.upsert({
-                where: { key: "telegram.offset" },
-                update: { value: update.update_id + 1 },
-                create: { key: "telegram.offset", value: update.update_id + 1 },
-              });
+        const offset = Number(
+          (await db.setting.findUnique({ where: { key: "telegram.offset" } }))
+            ?.value ?? 0,
+        );
+        const updates = await bot.api.getUpdates({
+          offset,
+          timeout: 1,
+          limit: 100,
+          allowed_updates: ["message", "callback_query"],
+        });
+        for (const update of updates)
+          await db.$transaction(async (tx) => {
+            await tx.telegramUpdate.upsert({
+              where: { id: BigInt(update.update_id) },
+              update: {},
+              create: {
+                id: BigInt(update.update_id),
+                payload: update as unknown as Prisma.InputJsonValue,
+              },
             });
-        }
-        const updates = await db.telegramUpdate.findMany({
+            await tx.setting.upsert({
+              where: { key: "telegram.offset" },
+              update: { value: update.update_id + 1 },
+              create: { key: "telegram.offset", value: update.update_id + 1 },
+            });
+          });
+        const pending = await db.telegramUpdate.findMany({
           where: { processedAt: null, attempts: { lt: 5 } },
           orderBy: { id: "asc" },
           take: 50,
         });
-        for (const update of updates) {
+        for (const update of pending) {
           if (!running || !hasLease) break;
           try {
             await db.telegramUpdate.update({
@@ -148,18 +141,20 @@ async function main() {
             });
           }
         }
-        if (running && hasLease) await jobs.run();
+        await db.adminConversationState.deleteMany({
+          where: { expiresAt: { lt: new Date() } },
+        });
       } catch (error) {
         console.error("Worker iteration failed:", safeError(error));
-        await db.telegramBotError
-          .create({ data: { context: "worker", message: safeError(error) } })
-          .catch(() => {});
+        await recordError(db, error, { section: "worker" });
       }
       await sleep(config.WORKER_INTERVAL_MS);
     }
   } finally {
     clearInterval(heartbeat);
-    await db.workerLease.deleteMany({ where: { id: "bot-worker", owner } });
+    await db.workerLease.deleteMany({
+      where: { id: "bot-worker", owner: leaseOwner },
+    });
   }
 }
 main()
@@ -167,4 +162,10 @@ main()
     console.error(safeError(error));
     process.exitCode = 1;
   })
-  .finally(() => db.$disconnect());
+  .finally(async () => {
+    if (server.listening) {
+      server.closeAllConnections();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+    await db.$disconnect();
+  });

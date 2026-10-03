@@ -1,81 +1,106 @@
-import { describe, expect, it } from "vitest";
-import { authorize } from "../src/admin/permissions";
-import { matchesRule } from "../src/services/recommendations";
-import { hashPassword, verifyPassword } from "../src/lib/password";
-import { paymentSettingSchema } from "../src/services/settings";
-describe("role permissions", () => {
-  it("permits ADMIN mutations", () =>
-    expect(() => authorize("ADMIN", "settings", true)).not.toThrow());
-  it("permits MANAGER to work with clients and requests", () => {
-    expect(() => authorize("MANAGER", "clients", true)).not.toThrow();
-    expect(() => authorize("MANAGER", "requests", true)).not.toThrow();
+import { describe, it, expect } from "vitest";
+import { permitted } from "../src/services/auth";
+import { runtimeConfig } from "../src/lib/config";
+import { safeError } from "../src/lib/errors";
+import { pageIndex, pagination } from "../src/utils/pagination";
+import { home } from "../src/bot/keyboards/admin";
+import {
+  courseSchema,
+  requisitesSchema,
+  defaultSettings,
+  configSchema,
+} from "../src/services/schemas";
+describe("roles and validation", () => {
+  it("OWNER has every section", () => {
+    for (const s of [
+      "staff",
+      "requisites",
+      "settings",
+      "payments",
+      "courses",
+      "clients",
+      "requests",
+      "access",
+    ] as const)
+      expect(permitted("OWNER", s, true)).toBe(true);
   });
-  it.each(["settings", "admins", "payments", "courses", "actions", "access"])(
-    "blocks MANAGER mutation: %s",
-    (resource) => expect(() => authorize("MANAGER", resource, true)).toThrow(),
-  );
-  it("permits read-only courses and payments", () => {
-    expect(() => authorize("MANAGER", "courses")).not.toThrow();
-    expect(() => authorize("MANAGER", "payments")).not.toThrow();
+  it("ADMIN has operational access but cannot manage staff/settings", () => {
+    expect(permitted("ADMIN", "payments", true)).toBe(true);
+    expect(permitted("ADMIN", "courses", true)).toBe(true);
+    for (const s of ["staff", "requisites", "settings"] as const)
+      expect(permitted("ADMIN", s, true)).toBe(false);
   });
-});
-describe("recommendation rule matching", () => {
-  const user = {
-    experienceLevel: "BEGINNER",
-    categoryId: "body",
-    learningGoal: "PERSONAL",
-  } as const;
-  it("requires all configured criteria for ALL", () =>
-    expect(
-      matchesRule(
-        {
-          experienceLevel: "BEGINNER",
-          categoryId: "face",
-          learningGoal: null,
-          matchMode: "ALL",
-        },
-        user,
-      ),
-    ).toBe(false));
-  it("accepts any configured criterion for ANY", () =>
-    expect(
-      matchesRule(
-        {
-          experienceLevel: "BEGINNER",
-          categoryId: "face",
-          learningGoal: null,
-          matchMode: "ANY",
-        },
-        user,
-      ),
-    ).toBe(true));
-  it("treats null criteria as wildcards", () =>
-    expect(
-      matchesRule(
-        {
-          experienceLevel: "BEGINNER",
-          categoryId: null,
-          learningGoal: null,
-          matchMode: "ALL",
-        },
-        user,
-      ),
-    ).toBe(true));
-});
-describe("configuration and credentials", () => {
-  it("never stores plain text passwords", async () => {
-    const hash = await hashPassword("test-long-password");
-    expect(hash).not.toContain("test-long-password");
-    expect(await verifyPassword("test-long-password", hash)).toBe(true);
-    expect(await verifyPassword("wrong", hash)).toBe(false);
+  it("MANAGER can edit clients and requests only", () => {
+    expect(permitted("MANAGER", "clients", true)).toBe(true);
+    expect(permitted("MANAGER", "requests", true)).toBe(true);
+    for (const s of [
+      "courses",
+      "payments",
+      "staff",
+      "settings",
+      "requisites",
+      "access",
+    ] as const)
+      expect(permitted("MANAGER", s, true)).toBe(false);
   });
-  it("requires requisites and instruction when payment is enabled", () =>
+  it("menus contain only permitted sections and compact callbacks", () => {
+    for (const role of ["OWNER", "ADMIN", "MANAGER"] as const)
+      for (const row of home(role).inline_keyboard)
+        for (const b of row)
+          if ("callback_data" in b)
+            expect(Buffer.byteLength(b.callback_data)).toBeLessThanOrEqual(64);
+    expect(JSON.stringify(home("MANAGER"))).not.toContain("a:menu:staff");
+  });
+  it("defaults and empty token configuration are valid", () => {
+    expect(configSchema.parse(defaultSettings).inviteLifetimeHours).toBe(24);
+    expect(
+      runtimeConfig({ DATABASE_URL: "postgresql://db", TELEGRAM_BOT_TOKEN: "" })
+        .TELEGRAM_BOT_TOKEN,
+    ).toBeUndefined();
+  });
+  it("rejects nonnumeric owner and invalid port", () => {
     expect(() =>
-      paymentSettingSchema.parse({
-        enabled: true,
-        title: "Bank",
+      runtimeConfig({ DATABASE_URL: "x", OWNER_TELEGRAM_ID: "abc" }),
+    ).toThrow();
+    expect(() => runtimeConfig({ DATABASE_URL: "x", PORT: "99999" })).toThrow();
+  });
+  it("redacts token and DB URL", () => {
+    expect(
+      safeError(new Error("bot123456:secret_token postgresql://u:p@host/db")),
+    ).toBe("[TOKEN] [DATABASE_URL]");
+  });
+  it("validates empty/last page and rejects forged page", () => {
+    expect(pagination(0, 99)).toMatchObject({ page: 0, pages: 1, skip: 0 });
+    expect(pagination(11, 99)).toMatchObject({ page: 2, skip: 10 });
+    expect(() => pageIndex("-1")).toThrow();
+    expect(() => pageIndex("NaN")).toThrow();
+  });
+  it("requires requisites before enabling and matches country currency", () => {
+    expect(() =>
+      requisitesSchema.parse({
+        country: "KZ",
+        currency: "RUB",
+        enabled: false,
+        title: "X",
         instruction: "",
         requisites: "",
       }),
-    ).toThrow());
+    ).toThrow();
+    expect(() =>
+      requisitesSchema.parse({
+        country: "KZ",
+        currency: "KZT",
+        enabled: true,
+        title: "X",
+        instruction: "",
+        requisites: "",
+      }),
+    ).toThrow();
+  });
+  it("rejects negative prices and forged channel IDs", () => {
+    expect(courseSchema.shape.priceKZT.safeParse("-1").success).toBe(false);
+    expect(courseSchema.shape.telegramChannelId.safeParse("123").success).toBe(
+      false,
+    );
+  });
 });
