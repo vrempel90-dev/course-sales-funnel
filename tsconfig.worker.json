@@ -1,0 +1,22 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "types": ["node"],
+    "noEmit": false,
+    "module": "Node16",
+    "moduleResolution": "Node16",
+    "outDir": "dist",
+    "incremental": false,
+    "plugins": [],
+    "rootDir": "src"
+  },
+  "include": [
+    "src/worker.ts",
+    "src/bot/**/*.ts",
+    "src/services/**/*.ts",
+    "src/lib/**/*.ts",
+    "src/database/**/*.ts",
+    "src/admin/**/*.ts"
+  ],
+  "exclude": ["node_modules", "src/app", "src/components", "src/lib/auth.ts"]
+}

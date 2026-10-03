@@ -1,0 +1,426 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  ADMIN
+  MANAGER
+}
+
+enum ExperienceLevel {
+  BEGINNER
+  PRACTICING
+  PROFESSIONAL
+  UPSKILLING
+}
+
+enum LearningGoal {
+  NEW_PROFESSION
+  NEW_SERVICE
+  PERSONAL
+  UPSKILLING
+}
+
+enum FunnelStage {
+  NEW
+  TELEGRAM_STARTED
+  QUESTIONNAIRE_STARTED
+  QUESTIONNAIRE_COMPLETED
+  COURSE_RECOMMENDED
+  DEMO_VIEWED
+  COURSE_SELECTED
+  PAYMENT_STARTED
+  WAITING_PAYMENT
+  PAYMENT_REVIEW
+  PAID
+  ACCESS_GRANTED
+  MANAGER_REQUESTED
+}
+
+enum ConversationStep {
+  IDLE
+  EXPERIENCE
+  CATEGORY
+  GOAL
+  COUNTRY
+  RECEIPT
+  MANAGER_MESSAGE
+}
+
+enum CourseStatus {
+  DRAFT
+  ACTIVE
+  HIDDEN
+  ARCHIVED
+}
+
+enum PaymentStatus {
+  PENDING
+  PENDING_REVIEW
+  PAID
+  REJECTED
+  CANCELLED
+  REFUNDED
+}
+
+enum Country {
+  KZ
+  RU
+}
+
+enum Currency {
+  KZT
+  RUB
+}
+
+enum EnrollmentStatus {
+  PENDING
+  ACTIVE
+  REVOKED
+  COMPLETED
+}
+
+enum AccessStatus {
+  WAITING
+  CREATING
+  GRANTED
+  FAILED
+  UNCERTAIN
+}
+
+enum ManagerRequestStatus {
+  NEW
+  IN_PROGRESS
+  RESOLVED
+}
+
+enum JobStatus {
+  PENDING
+  RUNNING
+  SENT
+  FAILED
+  CANCELLED
+}
+
+enum JobType {
+  ACCESS
+  ACCESS_NOTIFY
+  PAYMENT_REVIEW
+  PAYMENT_REJECTED
+  MANAGER_NOTIFY
+  REMINDER
+}
+
+enum ReminderType {
+  DEMO
+  PAYMENT
+}
+
+model AdminUser {
+  id               String           @id @default(cuid())
+  name             String
+  email            String?          @unique
+  telegramId       BigInt?          @unique
+  passwordHash     String
+  role             Role             @default(MANAGER)
+  active           Boolean          @default(true)
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+  sessions         AdminSession[]
+  reviewedPayments Payment[]
+  managerRequests  ManagerRequest[]
+  auditLogs        AuditLog[]
+}
+
+model AdminSession {
+  id        String    @id
+  adminId   String
+  admin     AdminUser @relation(fields: [adminId], references: [id], onDelete: Cascade)
+  expiresAt DateTime
+  createdAt DateTime  @default(now())
+
+  @@index([expiresAt])
+}
+
+model LoginAttempt {
+  id              String    @id
+  failures        Int       @default(0)
+  windowStartedAt DateTime  @default(now())
+  lockedUntil     DateTime?
+}
+
+model User {
+  id                   String                 @id @default(cuid())
+  telegramId           BigInt                 @unique
+  telegramUsername     String?
+  firstName            String
+  lastName             String?
+  phone                String?
+  experienceLevel      ExperienceLevel?
+  categoryId           String?
+  category             CourseCategory?        @relation(fields: [categoryId], references: [id])
+  learningGoal         LearningGoal?
+  currentFunnelStage   FunnelStage            @default(NEW)
+  conversationStep     ConversationStep       @default(IDLE)
+  questionnaireVersion Int                    @default(0)
+  selectedCourseId     String?
+  selectedCourse       Course?                @relation("SelectedCourse", fields: [selectedCourseId], references: [id])
+  activePaymentId      String?
+  resumeStep           ConversationStep       @default(IDLE)
+  createdAt            DateTime               @default(now())
+  updatedAt            DateTime               @updatedAt
+  lastActivityAt       DateTime               @default(now())
+  recommendations      CourseRecommendation[]
+  payments             Payment[]
+  enrollments          Enrollment[]
+  managerRequests      ManagerRequest[]
+  events               FunnelEvent[]
+  answers              QuestionnaireAnswer[]
+  reminders            Reminder[]
+
+  @@index([currentFunnelStage, createdAt])
+}
+
+model CourseCategory {
+  id        String               @id @default(cuid())
+  slug      String               @unique
+  title     String
+  active    Boolean              @default(true)
+  sortOrder Int                  @default(0)
+  createdAt DateTime             @default(now())
+  updatedAt DateTime             @updatedAt
+  courses   Course[]
+  users     User[]
+  rules     RecommendationRule[]
+}
+
+model Course {
+  id                String                 @id @default(cuid())
+  slug              String                 @unique
+  title             String
+  shortDescription  String
+  fullDescription   String
+  imageUrl          String?
+  demoVideoUrl      String?
+  demoFileId        String?
+  program           String
+  duration          String
+  categoryId        String
+  category          CourseCategory         @relation(fields: [categoryId], references: [id])
+  status            CourseStatus           @default(DRAFT)
+  telegramChannelId String?
+  priceKZT          Decimal                @db.Decimal(12, 2)
+  priceRUB          Decimal                @db.Decimal(12, 2)
+  createdAt         DateTime               @default(now())
+  updatedAt         DateTime               @updatedAt
+  rules             RecommendationRule[]
+  recommendations   CourseRecommendation[]
+  payments          Payment[]
+  enrollments       Enrollment[]
+  managerRequests   ManagerRequest[]
+  events            FunnelEvent[]
+  selectedUsers     User[]                 @relation("SelectedCourse")
+
+  @@index([status, categoryId])
+}
+
+model RecommendationRule {
+  id              String           @id @default(cuid())
+  experienceLevel ExperienceLevel?
+  categoryId      String?
+  category        CourseCategory?  @relation(fields: [categoryId], references: [id])
+  learningGoal    LearningGoal?
+  matchMode       String           @default("ALL")
+  courseId        String
+  course          Course           @relation(fields: [courseId], references: [id])
+  priority        Int              @default(0)
+  active          Boolean          @default(true)
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+}
+
+model CourseRecommendation {
+  id                   String   @id @default(cuid())
+  userId               String
+  user                 User     @relation(fields: [userId], references: [id])
+  courseId             String
+  course               Course   @relation(fields: [courseId], references: [id])
+  questionnaireVersion Int
+  score                Int
+  createdAt            DateTime @default(now())
+
+  @@unique([userId, courseId, questionnaireVersion])
+}
+
+model Payment {
+  id              String        @id @default(cuid())
+  userId          String
+  user            User          @relation(fields: [userId], references: [id])
+  courseId        String
+  course          Course        @relation(fields: [courseId], references: [id])
+  amount          Decimal       @db.Decimal(12, 2)
+  currency        Currency
+  country         Country
+  paymentMethod   String
+  instruction     String
+  requisites      String
+  status          PaymentStatus @default(PENDING)
+  activeKey       String?       @unique
+  receiptFileId   String?
+  receiptFileType String?
+  receiptRevision Int           @default(0)
+  createdAt       DateTime      @default(now())
+  reviewedAt      DateTime?
+  reviewedBy      String?
+  reviewer        AdminUser?    @relation(fields: [reviewedBy], references: [id])
+  rejectionReason String?
+  enrollment      Enrollment?
+
+  @@index([status, currency, createdAt])
+  @@index([userId, courseId])
+}
+
+model Enrollment {
+  id                 String           @id @default(cuid())
+  userId             String
+  user               User             @relation(fields: [userId], references: [id])
+  courseId           String
+  course             Course           @relation(fields: [courseId], references: [id])
+  paymentId          String           @unique
+  payment            Payment          @relation(fields: [paymentId], references: [id])
+  status             EnrollmentStatus @default(ACTIVE)
+  accessStatus       AccessStatus     @default(WAITING)
+  accessGrantedAt    DateTime?
+  telegramInviteLink String?          @unique
+  inviteExpiresAt    DateTime?
+  accessStartedAt    DateTime?
+  accessError        String?
+  joinedAt           DateTime?
+  createdAt          DateTime         @default(now())
+  updatedAt          DateTime         @updatedAt
+
+  @@unique([userId, courseId])
+  @@index([accessStatus])
+}
+
+model ManagerRequest {
+  id         String               @id @default(cuid())
+  userId     String
+  user       User                 @relation(fields: [userId], references: [id])
+  courseId   String?
+  course     Course?              @relation(fields: [courseId], references: [id])
+  status     ManagerRequestStatus @default(NEW)
+  message    String
+  stage      FunnelStage
+  assignedTo String?
+  assignee   AdminUser?           @relation(fields: [assignedTo], references: [id])
+  createdAt  DateTime             @default(now())
+  updatedAt  DateTime             @updatedAt
+
+  @@index([status, createdAt])
+}
+
+model FunnelEvent {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id])
+  type      String
+  courseId  String?
+  course    Course?  @relation(fields: [courseId], references: [id])
+  metadata  Json     @default("{}")
+  createdAt DateTime @default(now())
+
+  @@index([type, userId])
+  @@index([userId, createdAt])
+}
+
+model QuestionnaireAnswer {
+  id                   String   @id @default(cuid())
+  userId               String
+  user                 User     @relation(fields: [userId], references: [id])
+  questionnaireVersion Int
+  question             String
+  answer               String
+  createdAt            DateTime @default(now())
+
+  @@unique([userId, questionnaireVersion, question])
+}
+
+model Reminder {
+  id          String       @id @default(cuid())
+  userId      String
+  user        User         @relation(fields: [userId], references: [id])
+  type        ReminderType
+  contextId   String
+  dedupeKey   String       @unique
+  scheduledAt DateTime
+  sentAt      DateTime?
+  status      JobStatus    @default(PENDING)
+  createdAt   DateTime     @default(now())
+
+  @@index([status, scheduledAt])
+}
+
+model Setting {
+  key       String   @id
+  value     Json
+  updatedAt DateTime @updatedAt
+}
+
+model AuditLog {
+  id        String    @id @default(cuid())
+  adminId   String
+  admin     AdminUser @relation(fields: [adminId], references: [id])
+  action    String
+  entity    String
+  entityId  String
+  metadata  Json      @default("{}")
+  createdAt DateTime  @default(now())
+
+  @@index([entity, entityId, createdAt])
+}
+
+model TelegramBotError {
+  id        String   @id @default(cuid())
+  context   String
+  message   String
+  createdAt DateTime @default(now())
+}
+
+model OutboxJob {
+  id        String    @id @default(cuid())
+  type      JobType
+  entityId  String
+  dedupeKey String    @unique
+  status    JobStatus @default(PENDING)
+  attempts  Int       @default(0)
+  notBefore DateTime  @default(now())
+  lockedAt  DateTime?
+  lastError String?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  @@index([status, notBefore])
+}
+
+model TelegramUpdate {
+  id          BigInt    @id
+  payload     Json
+  processedAt DateTime?
+  attempts    Int       @default(0)
+  lastError   String?
+  createdAt   DateTime  @default(now())
+
+  @@index([processedAt, id])
+}
+
+model WorkerLease {
+  id        String   @id
+  owner     String
+  expiresAt DateTime
+}
