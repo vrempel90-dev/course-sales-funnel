@@ -22,6 +22,7 @@ export function healthServer(db: PrismaClient, tokenConfigured: boolean) {
         status: connected ? "ok" : "error",
         database: connected ? "connected" : "unavailable",
         tokenConfigured,
+        telegram: tokenConfigured ? "configured" : "not_configured",
         timestamp: new Date().toISOString(),
       }),
     );

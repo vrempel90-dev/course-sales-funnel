@@ -15,7 +15,10 @@
     "db:migrate": "prisma migrate deploy",
     "db:dev": "prisma migrate dev",
     "db:seed": "tsx prisma/seed.ts",
-    "bot:configure": "tsx scripts/configure-bot.ts"
+    "bot:configure": "tsx scripts/configure-bot.ts",
+    "prisma:generate": "prisma generate",
+    "prisma:migrate": "prisma migrate deploy",
+    "prisma:seed": "tsx prisma/seed.ts"
   },
   "prisma": {
     "seed": "tsx prisma/seed.ts"

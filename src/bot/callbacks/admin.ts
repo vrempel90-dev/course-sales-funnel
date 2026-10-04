@@ -1,5 +1,7 @@
 import { AdminUser, PrismaClient } from "@prisma/client";
 import { Context, InlineKeyboard } from "grammy";
+import { t } from "../../i18n";
+import type { TranslationKind } from "../../services/catalog";
 import { AppError } from "../../lib/errors";
 import { Section, requireAdmin } from "../../services/auth";
 import { AdminService, Entity } from "../../services/admin";
@@ -13,7 +15,8 @@ import { back, button, sections } from "../keyboards/admin";
 import { display } from "../messages";
 import { pageIndex } from "../../utils/pagination";
 function section(value: string): Section {
-  if (!Object.hasOwn(sections, value)) throw new AppError("Неизвестный раздел");
+  if (!Object.hasOwn(sections, value))
+    throw new AppError(t("error.unknownSection"));
   return value as Section;
 }
 export async function callback(
@@ -24,9 +27,12 @@ export async function callback(
   wizard: WizardView,
   flows: Conversations,
 ) {
+  const tr = (key: string) => t(key, admin.language);
+  const localizedBack = (k = new InlineKeyboard(), target = "a:home") =>
+    back(k, target, admin.language);
   const data = ctx.callbackQuery?.data;
   if (!data || Buffer.byteLength(data) > 64)
-    throw new AppError("Некорректная кнопка");
+    throw new AppError(t("error.invalidButton"));
   const [prefix, action, ...args] = data.split(":");
   if (prefix === "w") {
     const nonce = action,
@@ -41,24 +47,97 @@ export async function callback(
       await wizard.show(ctx, await flows.editPreview(admin.id, nonce, value));
     else if (op === "save") {
       await flows.commit(admin.id, nonce);
-      await display(ctx, "✅ Сохранено", back());
-    } else throw new AppError("Некорректная кнопка");
+      await display(ctx, tr("common.saved"), localizedBack());
+    } else throw new AppError(t("error.invalidButton"));
     return;
   }
-  if (prefix !== "a") throw new AppError("Некорректная кнопка");
+  if (prefix !== "a") throw new AppError(t("error.invalidButton"));
   const service = new AdminService(db);
   switch (action) {
+    case "lang":
+      if (!["RU", "KZ"].includes(args[0]))
+        throw new AppError(t("error.unknownLanguage"));
+      await views.home(
+        ctx,
+        await service.language(admin.id, args[0] as "RU" | "KZ"),
+      );
+      break;
+    case "fstage":
+      await views.stage(ctx, admin, args[0]);
+      break;
+    case "ctar":
+      await views.list(
+        ctx,
+        admin,
+        "tariffs",
+        "all",
+        pageIndex(args[1]),
+        args[0],
+      );
+      break;
+    case "tnew":
+      await requireAdmin(db, admin.id, "tariffs", true);
+      await db.course.findUniqueOrThrow({ where: { id: args[0] } });
+      await wizard.show(
+        ctx,
+        await flows.begin(admin.id, "tariff", undefined, undefined, {
+          courseId: args[0],
+        }),
+      );
+      break;
+    case "tr":
+      if (
+        !["ct", "kt", "tt", "bt"].includes(args[0]) ||
+        !["RU", "KZ"].includes(args[2])
+      )
+        throw new AppError(t("error.unknownTranslation"));
+      await views.translation(
+        ctx,
+        admin,
+        args[0] as TranslationKind,
+        args[1],
+        args[2] as "RU" | "KZ",
+      );
+      break;
+    case "tdel":
+      await requireAdmin(db, admin.id, "tariffs", true);
+      await display(
+        ctx,
+        tr("common.deleteConfirm"),
+        localizedBack(
+          button(
+            new InlineKeyboard(),
+            tr("common.delete"),
+            "a:tdelyes:" + args[0],
+          ),
+          "a:card:tariffs:" + args[0],
+        ),
+      );
+      break;
+    case "tdelyes": {
+      const tariff = await service.deleteTariff(admin.id, args[0]);
+      await views.list(ctx, admin, "tariffs", "all", 0, tariff.courseId);
+      break;
+    }
+    case "bmedia": {
+      await requireAdmin(db, admin.id, "bonuses");
+      const bonus = await db.bonusMaterial.findUniqueOrThrow({
+        where: { id: args[0] },
+      });
+      if (bonus.fileId && bonus.fileType === "video")
+        await ctx.replyWithVideo(bonus.fileId);
+      else if (bonus.fileId) await ctx.replyWithDocument(bonus.fileId);
+      else if (bonus.url) await ctx.reply(bonus.url);
+      else throw new AppError(tr("media.missing"));
+      break;
+    }
     case "home":
       await flows.cancel(admin.id);
       await views.home(ctx, admin);
       break;
     case "close":
       await flows.cancel(admin.id);
-      await display(
-        ctx,
-        "Админ-панель закрыта. /admin — открыть",
-        new InlineKeyboard(),
-      );
+      await display(ctx, tr("common.closed"), new InlineKeyboard());
       break;
     case "menu":
       await flows.cancel(admin.id);
@@ -97,14 +176,16 @@ export async function callback(
     case "edit": {
       const kind = args[0];
       if (!Object.hasOwn(fields, kind))
-        throw new AppError("Неизвестный мастер");
+        throw new AppError(t("error.unknownWizard"));
       if (action === "edit" && (!args[1] || !args[2]))
-        throw new AppError("Неизвестное поле");
+        throw new AppError(t("error.unknownField"));
       if (
         action === "new" &&
-        !["course", "category", "rule", "admin", "search"].includes(kind)
+        !["course", "category", "tariff", "rule", "admin", "search"].includes(
+          kind,
+        )
       )
-        throw new AppError("Создание недоступно");
+        throw new AppError(t("error.createDenied"));
       await wizard.show(
         ctx,
         await flows.begin(
@@ -124,29 +205,29 @@ export async function callback(
       await requireAdmin(db, admin.id, "payments", true);
       const k = new InlineKeyboard();
       for (const [key, label] of [
-        ["unreadable", "Чек не читается"],
-        ["amount", "Неверная сумма"],
-        ["missing", "Платёж не найден"],
-        ["other", "Другая причина"],
+        ["unreadable", tr("reject.unreadable")],
+        ["amount", tr("reject.amount")],
+        ["missing", tr("reject.missing")],
+        ["other", tr("reject.other")],
       ])
         button(k, label, "a:reason:" + args[0] + ":" + key).row();
       await display(
         ctx,
-        "Выберите причину отклонения",
-        back(k, "a:card:payments:" + args[0]),
+        tr("reject.prompt"),
+        localizedBack(k, "a:card:payments:" + args[0]),
       );
       break;
     }
     case "reason": {
       const reasons: Record<string, string> = {
-        unreadable: "Чек не читается",
-        amount: "Неверная сумма",
-        missing: "Платёж не найден",
+        unreadable: tr("reject.unreadable"),
+        amount: tr("reject.amount"),
+        missing: tr("reject.missing"),
       };
       if (args[1] === "other")
         await wizard.show(ctx, await flows.begin(admin.id, "reject", args[0]));
       else {
-        if (!reasons[args[1]]) throw new AppError("Неизвестная причина");
+        if (!reasons[args[1]]) throw new AppError(t("error.unknownReason"));
         await new PaymentService(db).review(
           admin.id,
           args[0],
@@ -160,14 +241,14 @@ export async function callback(
     case "receipt": {
       await requireAdmin(db, admin.id, "payments");
       const p = await db.payment.findUniqueOrThrow({ where: { id: args[0] } });
-      if (!p.receiptFileId) throw new AppError("Чек не прикреплён");
+      if (!p.receiptFileId) throw new AppError(t("error.noReceipt"));
       if (p.receiptType === "photo")
         await ctx.replyWithPhoto(p.receiptFileId, {
-          caption: "Чек оплаты " + p.id,
+          caption: tr("payments.title") + " " + p.id,
         });
       else
         await ctx.replyWithDocument(p.receiptFileId, {
-          caption: "Чек оплаты " + p.id,
+          caption: tr("payments.title") + " " + p.id,
         });
       break;
     }
@@ -191,8 +272,8 @@ export async function callback(
       else if (args[0] === "demo" && c.demoFileId)
         await ctx.replyWithVideo(c.demoFileId);
       else if (args[0] === "demo" && c.demoVideoUrl)
-        await ctx.reply("Демоурок: " + c.demoVideoUrl);
-      else throw new AppError("Медиа не задано");
+        await ctx.reply(tr("field.demo") + ": " + c.demoVideoUrl);
+      else throw new AppError(tr("media.missing"));
       break;
     }
     case "retry":
@@ -206,11 +287,11 @@ export async function callback(
       await requireAdmin(db, admin.id, "access", true);
       await display(
         ctx,
-        "Проверьте инвайты канала и отзовите возможную незаписанную ссылку. Подтвердите только после сверки.",
-        back(
+        tr("access.check"),
+        localizedBack(
           button(
             new InlineKeyboard(),
-            "Сверка завершена, повторить",
+            tr("access.checked"),
             "a:retrychecked:" + args[0],
           ),
           "a:card:access:" + args[0],
@@ -227,7 +308,7 @@ export async function callback(
       break;
     case "request":
       if (!["IN_PROGRESS", "RESOLVED"].includes(args[1]))
-        throw new AppError("Некорректный статус");
+        throw new AppError(t("error.invalidStatus"));
       await service.request(
         admin.id,
         args[0],
@@ -242,11 +323,17 @@ export async function callback(
       });
       await display(
         ctx,
-        target.name + "\nПодтвердить " + args[1] + " → " + args[2] + "?",
-        back(
+        target.name +
+          "\n" +
+          tr("common.confirm") +
+          " " +
+          args[1] +
+          " → " +
+          args[2],
+        localizedBack(
           button(
             new InlineKeyboard(),
-            "Подтвердить",
+            tr("card.approve"),
             "a:staffapply:" + args.join(":"),
           ),
           "a:card:staff:" + args[0],
@@ -263,7 +350,7 @@ export async function callback(
         await service.changeStaff(admin.id, args[0], {
           active: args[2] === "true",
         });
-      else throw new AppError("Некорректное изменение");
+      else throw new AppError(t("error.invalidChange"));
       const actor = await db.adminUser.findUniqueOrThrow({
         where: { id: admin.id },
       });
@@ -272,7 +359,7 @@ export async function callback(
       else
         await display(
           ctx,
-          "✅ Сохранено. /admin — открыть доступное меню",
+          tr("common.saved") + " /admin",
           new InlineKeyboard(),
         );
       break;
@@ -281,11 +368,11 @@ export async function callback(
       await requireAdmin(db, admin.id, "rules", true);
       await display(
         ctx,
-        "Удалить правило?",
-        back(
+        tr("common.deleteConfirm"),
+        localizedBack(
           button(
             new InlineKeyboard(),
-            "🗑 Подтвердить удаление",
+            tr("common.delete"),
             "a:deleteyes:" + args[0],
           ),
           "a:card:rules:" + args[0],
@@ -297,6 +384,6 @@ export async function callback(
       await views.menu(ctx, admin, "rules");
       break;
     default:
-      throw new AppError("Некорректная кнопка");
+      throw new AppError(t("error.invalidButton"));
   }
 }

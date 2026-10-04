@@ -1,5 +1,6 @@
 import { Bot } from "grammy";
 import { PrismaClient } from "@prisma/client";
+import { t, translateMessage } from "../i18n";
 import { AppError, recordError } from "../lib/errors";
 import { Conversations } from "../services/conversations";
 import { AdminViews } from "./admin/views";
@@ -21,10 +22,17 @@ export function createBot(token: string, db: PrismaClient, username?: string) {
           updateId: ctx.update.update_id,
           section: "admin",
         });
+      const actor = ctx.from
+        ? await db.adminUser
+            .findUnique({ where: { telegramId: BigInt(ctx.from.id) } })
+            .catch(() => null)
+        : null;
       const text =
         error instanceof AppError
-          ? error.message
-          : "Не удалось выполнить действие. Попробуйте ещё раз.";
+          ? error.status === 403
+            ? t("common.denied", actor?.language)
+            : translateMessage(error.message, actor?.language)
+          : t("common.error", actor?.language);
       try {
         if (ctx.callbackQuery)
           await ctx.answerCallbackQuery({
@@ -46,14 +54,14 @@ export function createBot(token: string, db: PrismaClient, username?: string) {
   bot.on("message", async (ctx) => {
     if (ctx.message.text?.startsWith("/")) {
       const admin = await authenticate(ctx, db);
-      await ctx.reply("Доступны /admin и /cancel. " + admin.role);
+      await ctx.reply(t("common.commands", admin.language) + " " + admin.role);
       return;
     }
     const admin = await authenticate(ctx, db);
     const result = await wizard.message(ctx, admin);
     if (result && typeof result === "object")
       await views.list(ctx, admin, "clients", "search", 0);
-    else if (!result) await ctx.reply("Откройте /admin и выберите действие.");
+    else if (!result) await ctx.reply(t("common.prompt", admin.language));
   });
   bot.catch(async (error) => {
     await recordError(db, error.error, { section: "bot-catch" });

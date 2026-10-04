@@ -15,6 +15,7 @@ import {
   User,
 } from "@prisma/client";
 import type { Update } from "grammy/types";
+import { recordError } from "../src/lib/errors";
 import { bootstrapOwner, requireAdmin } from "../src/services/auth";
 import { AdminService } from "../src/services/admin";
 import { PaymentService } from "../src/services/payments";
@@ -22,6 +23,8 @@ import { AccessService } from "../src/services/access";
 import { Conversations, payload } from "../src/services/conversations";
 import { AdminRepository } from "../src/repositories/admin";
 import { GrammyGateway, TelegramGateway } from "../src/bot/gateway";
+import { seedCatalog, catalog, funnelSeed } from "../src/services/catalog-seed";
+import { content } from "../src/i18n";
 import { createBot } from "../src/bot";
 const url = process.env.TEST_DATABASE_URL;
 const suite = url ? describe : describe.skip;
@@ -39,14 +42,15 @@ suite("administration with actual PostgreSQL", () => {
   beforeAll(async () => {
     if (!url || !new URL(url).pathname.endsWith("/course_funnel_test"))
       throw new Error("Dedicated test database required");
-    expect(await db.courseCategory.count()).toBe(5);
-    expect(await db.course.count()).toBe(5);
-    expect(await db.course.count({ where: { status: "DRAFT" } })).toBe(5);
+    expect(await db.courseCategory.count()).toBe(4);
+    expect(await db.course.count()).toBe(15);
+    expect(await db.courseTariff.count()).toBe(23);
+    expect(await db.course.count({ where: { status: "DRAFT" } })).toBe(15);
     expect(await db.adminUser.count({ where: { role: "OWNER" } })).toBe(1);
   });
   beforeEach(async () => {
     await db.$executeRawUnsafe(
-      'TRUNCATE "User","AdminUser","CourseCategory","Setting","PaymentMethodSetting","TelegramBotError","TelegramUpdate","WorkerLease" CASCADE',
+      'TRUNCATE "User","AdminUser","CourseCategory","Setting","PaymentMethodSetting","TelegramBotError","TelegramUpdate","WorkerLease","FunnelContent","BonusMaterial" CASCADE',
     );
     owner = (await bootstrapOwner(db, "1001"))!;
     admin = await db.adminUser.create({
@@ -56,7 +60,7 @@ suite("administration with actual PostgreSQL", () => {
       data: { name: "Manager", telegramId: 1003n, role: "MANAGER" },
     });
     category = await db.courseCategory.create({
-      data: { slug: "test", title: "Массаж" },
+      data: { slug: "test", code: "TEST", title: "Массаж" },
     });
     course = await db.course.create({
       data: {
@@ -66,8 +70,6 @@ suite("administration with actual PostgreSQL", () => {
         fullDescription: "Полное описание",
         program: "Программа",
         duration: "Месяц",
-        priceKZT: 100,
-        priceRUB: 20,
         categoryId: category.id,
         telegramChannelId: "-1001234567890",
       },
@@ -293,7 +295,14 @@ suite("administration with actual PostgreSQL", () => {
   });
   it("creates and edits prices/media/channel/archive individually", async () => {
     const c = await service.save(admin.id, "course", courseData());
-    let state = await flows.begin(admin.id, "course", c.id, "priceKZT");
+    const tariff = await service.save(admin.id, "tariff", {
+      courseId: c.id,
+      code: "STANDARD",
+      title: "Standard",
+      priceKZT: "100",
+      priceRUB: "20",
+    });
+    let state = await flows.begin(admin.id, "tariff", tariff.id, "priceKZT");
     state = await flows.input(admin.id, state.nonce, "26000.50");
     await flows.commit(admin.id, state.nonce);
     state = await flows.begin(admin.id, "course", c.id, "status");
@@ -301,11 +310,10 @@ suite("administration with actual PostgreSQL", () => {
     await flows.commit(admin.id, state.nonce);
     expect(await db.course.findUnique({ where: { id: c.id } })).toMatchObject({
       status: "ARCHIVED",
-      priceKZT: expect.objectContaining({}),
     });
     expect(
       (
-        await db.course.findUniqueOrThrow({ where: { id: c.id } })
+        await db.courseTariff.findUniqueOrThrow({ where: { id: tariff.id } })
       ).priceKZT.toString(),
     ).toBe("26000.5");
     expect(
@@ -590,26 +598,29 @@ suite("administration with actual PostgreSQL", () => {
     expect(payload(state).data.title).toBe("Название");
     expect(payload(state).data.description).toBeUndefined();
   });
-  it("course wizard has 12 steps and allows preview field correction", async () => {
+  it("course wizard supports RU/KZ and allows preview field correction", async () => {
     let s = await flows.begin(admin.id, "course");
     const values = [
-      "Course",
-      "Short",
-      "Full",
       category.id,
+      "Course",
+      "-",
+      "Short",
+      "-",
+      "Full",
+      "-",
       "Program",
+      "-",
       "Month",
-      "100",
-      "20",
+      "-",
       { imageFileId: "photo_id", imageUrl: null },
       { demoFileId: "video_id", demoVideoUrl: null },
       "-1001234567890",
       "ACTIVE",
     ];
-    expect(payload(s).keys).toHaveLength(12);
+    expect(payload(s).keys).toHaveLength(15);
     for (const value of values) s = await flows.input(admin.id, s.nonce, value);
-    s = await flows.editPreview(admin.id, s.nonce, "priceKZT");
-    s = await flows.input(admin.id, s.nonce, "150");
+    s = await flows.editPreview(admin.id, s.nonce, "title");
+    s = await flows.input(admin.id, s.nonce, "Course");
     const [a, b] = await Promise.allSettled([
       flows.commit(admin.id, s.nonce),
       flows.commit(admin.id, s.nonce),
@@ -747,7 +758,9 @@ suite("administration with actual PostgreSQL", () => {
     const h = harness();
     await h.click("a:new:category");
     await h.text("Telegram category");
+    await h.text("-");
     await h.text("Description");
+    await h.text("-");
     let s = await flows.state(owner.id);
     await h.click("w:" + s.nonce + ":pick:true");
     await h.text("2");
@@ -897,6 +910,484 @@ suite("administration with actual PostgreSQL", () => {
       ["requisites", "KZ"],
     ])
       await h.click("a:card:" + section + ":" + id);
+    expect(await db.telegramBotError.count()).toBe(0);
+    for (const call of h.calls) {
+      const markup = call.payload.reply_markup as
+        { inline_keyboard?: { callback_data?: string }[][] } | undefined;
+      for (const row of markup?.inline_keyboard ?? [])
+        for (const b of row)
+          if (b.callback_data)
+            expect(Buffer.byteLength(b.callback_data)).toBeLessThanOrEqual(64);
+    }
+  });
+  it("seeds every real course and all exact tariff prices, with empty KZ marketing and no invented media", async () => {
+    await seedCatalog(db);
+    for (const [slug, title, categoryCode, kzt, rub] of catalog) {
+      const c = await db.course.findUniqueOrThrow({
+        where: { slug },
+        include: {
+          category: true,
+          translations: true,
+          tariffs: { include: { translations: true } },
+        },
+      });
+      expect(c.category.code).toBe(categoryCode);
+      expect(content(c.translations, "RU", "title")).toBe(title);
+      expect(content(c.translations, "KZ", "title")).toBe(title);
+      expect(c.translations.find((t) => t.language === "KZ")?.title).toBe("");
+      expect(c.telegramChannelId).toBeNull();
+      const expected =
+        categoryCode === "PROFESSIONAL"
+          ? [
+              ["SELF", 30000, 6000],
+              ["CURATOR", 50000, 10000],
+              ["MENTORSHIP", 75000, 15000],
+            ]
+          : [["STANDARD", kzt, rub]];
+      expect(c.tariffs).toHaveLength(expected.length);
+      for (const [code, kzt, rub] of expected) {
+        const tariff = c.tariffs.find((t) => t.code === code)!;
+        expect(tariff.priceKZT.toString()).toBe(String(kzt));
+        expect(tariff.priceRUB.toString()).toBe(String(rub));
+        expect(tariff.translations).toHaveLength(2);
+      }
+    }
+    expect(await db.courseTariff.count()).toBe(23);
+    expect(await db.recommendationRule.count()).toBe(16);
+    expect(await db.bonusMaterial.count()).toBe(3);
+    expect(
+      await db.bonusMaterial.count({
+        where: { OR: [{ fileId: { not: null } }, { url: { not: null } }] },
+      }),
+    ).toBe(0);
+    for (const [key, , text] of funnelSeed)
+      expect(
+        (
+          await db.funnelContent.findUniqueOrThrow({
+            where: { key_language: { key, language: "RU" } },
+          })
+        ).text,
+      ).toBe(text);
+  });
+  it("seed remains idempotent and preserves edited prices, translations and funnel content", async () => {
+    await seedCatalog(db);
+    const tariff = await db.courseTariff.findFirstOrThrow();
+    await db.courseTariff.update({
+      where: { id: tariff.id },
+      data: { priceKZT: "12345" },
+    });
+    const text = await db.courseTranslation.findFirstOrThrow({
+      where: { language: "KZ" },
+    });
+    await db.courseTranslation.update({
+      where: { id: text.id },
+      data: { title: "Бекітілген атау" },
+    });
+    const f = await db.funnelContent.findUniqueOrThrow({
+      where: { key_language: { key: "WELCOME", language: "RU" } },
+    });
+    await db.funnelContent.update({
+      where: { id: f.id },
+      data: { text: "Edited" },
+    });
+    await seedCatalog(db);
+    expect(await db.courseTariff.count()).toBe(23);
+    expect(
+      (
+        await db.courseTariff.findUniqueOrThrow({ where: { id: tariff.id } })
+      ).priceKZT.toString(),
+    ).toBe("12345");
+    expect(
+      (await db.courseTranslation.findUniqueOrThrow({ where: { id: text.id } }))
+        .title,
+    ).toBe("Бекітілген атау");
+    expect(
+      (await db.funnelContent.findUniqueOrThrow({ where: { id: f.id } })).text,
+    ).toBe("Edited");
+  });
+  it("persists language switching and renders KZ menu/wizard after bot restart", async () => {
+    const h = harness();
+    await h.click("a:lang:KZ");
+    expect(
+      (await db.adminUser.findUniqueOrThrow({ where: { id: owner.id } }))
+        .language,
+    ).toBe("KZ");
+    expect(JSON.stringify(h.calls)).toContain("Әкімші панелі");
+    const restarted = harness();
+    await restarted.text("/admin");
+    await restarted.click("a:new:course");
+    expect(JSON.stringify(restarted.calls)).toContain("Қадам");
+    expect(JSON.stringify(restarted.calls)).toContain("Бағыт");
+    await restarted.click("a:lang:RU");
+    expect(JSON.stringify(restarted.calls)).toContain("Админ-панель");
+  });
+  it("lets MANAGER select language but rejects forged tariff/funnel/bonus/settings mutations", async () => {
+    const h = harness(1003);
+    await h.click("a:lang:KZ");
+    expect(
+      (await db.adminUser.findUniqueOrThrow({ where: { id: manager.id } }))
+        .language,
+    ).toBe("KZ");
+    for (const section of ["tariffs", "funnel", "bonuses", "settings"])
+      await h.click("a:menu:" + section);
+    await h.click("a:new:tariff");
+    await h.click("a:tr:ct:" + course.id + ":KZ");
+    expect(await db.adminConversationState.count()).toBe(0);
+    expect(await db.courseTranslation.count()).toBe(0);
+    expect(JSON.stringify(h.calls)).toContain("қолжетімсіз");
+  });
+  it("edits RU/KZ course content independently and preserves KZ on metadata changes", async () => {
+    const c = await service.save(admin.id, "course", {
+      ...courseData(),
+      titleKZ: "Қазақша курс",
+    });
+    const kz = await service.translation(admin.id, "ct", c.id, "KZ");
+    let state = await flows.begin(admin.id, "ct", kz.id, "fullDescription");
+    state = await flows.input(admin.id, state.nonce, "Қазақша толық сипаттама");
+    await flows.commit(admin.id, state.nonce);
+    state = await flows.begin(admin.id, "course", c.id, "status");
+    state = await flows.input(admin.id, state.nonce, "ACTIVE");
+    await flows.commit(admin.id, state.nonce);
+    const texts = await db.courseTranslation.findMany({
+      where: { courseId: c.id },
+    });
+    expect(texts.find((t) => t.language === "RU")?.fullDescription).toBe(
+      courseData().fullDescription,
+    );
+    expect(texts.find((t) => t.language === "KZ")).toMatchObject({
+      title: "Қазақша курс",
+      fullDescription: "Қазақша толық сипаттама",
+    });
+    expect(content(texts, "KZ", "program")).toBe(courseData().program);
+    expect(
+      await db.auditLog.count({
+        where: { entityId: kz.id, action: "COURSE_UPDATED" },
+      }),
+    ).toBe(1);
+  });
+  it("protects required RU title and allows clearing KZ title with fallback", async () => {
+    const ru = await service.translation(owner.id, "ct", course.id, "RU");
+    await expect(
+      service.save(owner.id, "ct", { ...ru, title: "" }, ru.id),
+    ).rejects.toThrow();
+    expect(
+      (await db.courseTranslation.findUniqueOrThrow({ where: { id: ru.id } }))
+        .title,
+    ).toBe("Курс");
+    const kz = await service.translation(owner.id, "ct", course.id, "KZ");
+    await service.save(owner.id, "ct", { ...kz, title: "Атау" }, kz.id);
+    await service.save(owner.id, "ct", { ...kz, title: "" }, kz.id);
+    expect(
+      content(
+        await db.courseTranslation.findMany({ where: { courseId: course.id } }),
+        "KZ",
+        "title",
+      ),
+    ).toBe("Курс");
+  });
+  it("creates tariffs with exact decimals and safely disables referenced tariffs", async () => {
+    const a = await service.save(admin.id, "tariff", {
+      courseId: course.id,
+      code: "SELF",
+      title: "Самостоятельный",
+      priceKZT: "30000",
+      priceRUB: "6000",
+    });
+    const p = await pending();
+    await db.payment.update({ where: { id: p.id }, data: { tariffId: a.id } });
+    await payments.review(owner.id, p.id, true);
+    expect(
+      (await db.enrollment.findUniqueOrThrow({ where: { paymentId: p.id } }))
+        .tariffId,
+    ).toBe(a.id);
+    await service.deleteTariff(admin.id, a.id);
+    expect(
+      (await db.courseTariff.findUniqueOrThrow({ where: { id: a.id } })).active,
+    ).toBe(false);
+    expect(
+      (
+        await db.payment.findUniqueOrThrow({ where: { id: p.id } })
+      ).amount.toString(),
+    ).toBe("100");
+    const b = await service.save(admin.id, "tariff", {
+      courseId: course.id,
+      code: "CURATOR",
+      title: "С куратором",
+      priceKZT: "50000",
+      priceRUB: "10000",
+    });
+    await service.deleteTariff(admin.id, b.id);
+    expect(
+      await db.courseTariff.findUnique({ where: { id: b.id } }),
+    ).toBeNull();
+  });
+  it("rejects mismatched course/tariff relations before approving payment", async () => {
+    const other = await service.save(admin.id, "course", courseData());
+    const tariff = await service.save(admin.id, "tariff", {
+      courseId: other.id,
+      code: "STANDARD",
+      title: "Standard",
+      priceKZT: "1",
+      priceRUB: "1",
+    });
+    const p = await pending();
+    await db.payment.update({
+      where: { id: p.id },
+      data: { tariffId: tariff.id },
+    });
+    await expect(payments.review(owner.id, p.id, true)).rejects.toThrow(
+      "не принадлежит",
+    );
+    expect(
+      (await db.payment.findUniqueOrThrow({ where: { id: p.id } })).status,
+    ).toBe("PENDING_REVIEW");
+    expect(await db.enrollment.count()).toBe(0);
+  });
+  it("edits funnel language content transactionally through Telegram", async () => {
+    await seedCatalog(db);
+    const f = await db.funnelContent.findUniqueOrThrow({
+      where: { key_language: { key: "WELCOME", language: "KZ" } },
+    });
+    const h = harness(1002);
+    await h.click("a:fstage:WELCOME");
+    await h.click("a:list:funnel:WELCOME_KZ:0");
+    await h.click("a:card:funnel:" + f.id);
+    expect(JSON.stringify(h.calls)).toContain("Перевод KZ не заполнен");
+    await h.click("a:edit:funnel:" + f.id + ":text");
+    await h.text("Сәлеметсіз бе!");
+    const state = await flows.state(admin.id);
+    await h.click("w:" + state.nonce + ":save:ok");
+    expect(
+      (await db.funnelContent.findUniqueOrThrow({ where: { id: f.id } })).text,
+    ).toBe("Сәлеметсіз бе!");
+    expect(
+      await db.auditLog.count({ where: { action: "FUNNEL_CONTENT_UPDATED" } }),
+    ).toBe(1);
+    expect(
+      (
+        await db.funnelContent.findUniqueOrThrow({
+          where: { key_language: { key: "WELCOME", language: "RU" } },
+        })
+      ).text,
+    ).toBe(funnelSeed[0][2]);
+  });
+  it("uploads bonus video/document file_id and edits bonus translations", async () => {
+    await seedCatalog(db);
+    const h = harness();
+    for (const [code, media, fileId] of [
+      [
+        "PROFESSIONAL_BASIC_VIDEO",
+        {
+          video: {
+            file_id: "bonus-video",
+            file_unique_id: "v",
+            width: 10,
+            height: 10,
+            duration: 10,
+          },
+        },
+        "bonus-video",
+      ],
+      [
+        "FAMILY_SAFE_CHECKLIST",
+        {
+          document: {
+            file_id: "bonus-pdf",
+            file_unique_id: "d",
+            mime_type: "application/pdf",
+          },
+        },
+        "bonus-pdf",
+      ],
+    ] as const) {
+      const b = await db.bonusMaterial.findUniqueOrThrow({ where: { code } });
+      await h.click("a:edit:bonus:" + b.id + ":media");
+      await h.media(media);
+      const state = await flows.state(owner.id);
+      await h.click("w:" + state.nonce + ":save:ok");
+      expect(
+        (await db.bonusMaterial.findUniqueOrThrow({ where: { id: b.id } }))
+          .fileId,
+      ).toBe(fileId);
+      await h.click("a:bmedia:" + b.id);
+      await h.click("a:tr:bt:" + b.id + ":KZ");
+    }
+    expect(
+      h.calls.some(
+        (c) => c.method === "sendVideo" && c.payload.video === "bonus-video",
+      ),
+    ).toBe(true);
+    expect(
+      h.calls.some(
+        (c) =>
+          c.method === "sendDocument" && c.payload.document === "bonus-pdf",
+      ),
+    ).toBe(true);
+    expect(h.calls.some((c) => c.method === "getFile")).toBe(false);
+    expect(
+      await db.auditLog.count({ where: { action: "BONUS_UPDATED" } }),
+    ).toBe(2);
+  });
+  it("stores client language/segments and filters RU/KZ clients and tariff pages", async () => {
+    await db.user.update({
+      where: { id: user.id },
+      data: {
+        language: "KZ",
+        primaryGoal: "BEAUTY",
+        beautyProfession: "NAILS",
+      },
+    });
+    const repo = new AdminRepository(db);
+    expect(
+      (await repo.list("clients", "KZ", 0)).rows.map((r) => r.id),
+    ).toContain(user.id);
+    expect((await repo.list("clients", "RU", 0)).total).toBe(0);
+    for (let i = 0; i < 7; i++)
+      await service.save(admin.id, "tariff", {
+        courseId: course.id,
+        code: "T" + i,
+        title: "Tariff" + i,
+        priceKZT: "1",
+        priceRUB: "2",
+      });
+    expect((await repo.list("tariffs", "all", 0, course.id)).rows).toHaveLength(
+      5,
+    );
+    expect((await repo.list("tariffs", "all", 1, course.id)).rows).toHaveLength(
+      2,
+    );
+    expect(await repo.stats()).toContain("Бьюти: 1");
+    expect(await repo.stats("KZ")).toContain("Бүгін");
+  });
+  it("provides reminder/trial/expert settings without activating client sends", async () => {
+    expect(await service.settings()).toMatchObject({
+      funnelDelayHours: 3,
+      demoDelayHours: 3,
+      paymentDelayHours: 3,
+      reminderMaxAttempts: 3,
+      trialEnabled: false,
+      expertContact: "",
+    });
+    let state = await flows.begin(
+      owner.id,
+      "settings",
+      "config",
+      "expertContact",
+    );
+    state = await flows.input(owner.id, state.nonce, "@expert_contact");
+    await flows.commit(owner.id, state.nonce);
+    expect((await service.settings()).expertContact).toBe("@expert_contact");
+    expect(await db.outboxJob.count()).toBe(0);
+  });
+  it("rejects stale price editors instead of overwriting another administrator's changes", async () => {
+    const tariff = await service.save(admin.id, "tariff", {
+      courseId: course.id,
+      code: "SELF",
+      title: "Self",
+      priceKZT: "30000",
+      priceRUB: "6000",
+    });
+    let first = await flows.begin(admin.id, "tariff", tariff.id, "priceKZT");
+    let second = await flows.begin(owner.id, "tariff", tariff.id, "priceRUB");
+    first = await flows.input(admin.id, first.nonce, "35000");
+    second = await flows.input(owner.id, second.nonce, "7000");
+    await flows.commit(admin.id, first.nonce);
+    await expect(flows.commit(owner.id, second.nonce)).rejects.toThrow(
+      "Данные изменились",
+    );
+    const row = await db.courseTariff.findUniqueOrThrow({
+      where: { id: tariff.id },
+    });
+    expect(row.priceKZT.toString()).toBe("35000");
+    expect(row.priceRUB.toString()).toBe("6000");
+    expect(
+      await db.adminConversationState.findUnique({
+        where: { adminId: owner.id },
+      }),
+    ).toBeTruthy();
+  });
+  it("creates and reprices a tariff through Telegram with confirmation and before/after audit", async () => {
+    const h = harness();
+    await h.click("a:tnew:" + course.id);
+    for (const text of ["SELF", "Самостоятельный", "-", "-", "30000", "6000"])
+      await h.text(text);
+    let state = await flows.state(owner.id);
+    await h.click("w:" + state.nonce + ":pick:true");
+    await h.text("0");
+    expect(await db.courseTariff.count()).toBe(0);
+    state = await flows.state(owner.id);
+    await h.click("w:" + state.nonce + ":save:ok");
+    const tariff = await db.courseTariff.findFirstOrThrow();
+    await h.click("a:edit:tariff:" + tariff.id + ":priceKZT");
+    await h.text("35000,50");
+    expect(
+      (
+        await db.courseTariff.findUniqueOrThrow({ where: { id: tariff.id } })
+      ).priceKZT.toString(),
+    ).toBe("30000");
+    state = await flows.state(owner.id);
+    await h.click("w:" + state.nonce + ":save:ok");
+    expect(
+      (
+        await db.courseTariff.findUniqueOrThrow({ where: { id: tariff.id } })
+      ).priceKZT.toString(),
+    ).toBe("35000.5");
+    expect(
+      (
+        await db.auditLog.findFirstOrThrow({
+          where: { entityId: tariff.id, action: "TARIFF_UPDATED" },
+        })
+      ).metadata,
+    ).toMatchObject({
+      before: { priceKZT: "30000" },
+      after: { priceKZT: "35000.5" },
+    });
+    expect(await db.telegramBotError.count()).toBe(0);
+  });
+  it("keeps long error context as valid redacted JSON", async () => {
+    await recordError(db, new Error("Failure"), {
+      body: "x".repeat(3000),
+      nested: {
+        url: "postgresql://test:mock@localhost/db",
+        token: "bot123456:mock_token",
+      },
+    });
+    const row = await db.telegramBotError.findFirstOrThrow();
+    expect(typeof row.context).toBe("object");
+    expect(JSON.stringify(row.context)).not.toContain("mock");
+    expect(JSON.stringify(row.context)).toContain("[TOKEN]");
+  });
+  it("all new menus, translation cards and legacy IDs fit Telegram callback limits", async () => {
+    await seedCatalog(db);
+    const h = harness();
+    for (const section of [
+      "tariffs",
+      "funnel",
+      "bonuses",
+      "languages",
+      "status",
+    ])
+      await h.click("a:menu:" + section);
+    const c = await db.course.findFirstOrThrow({
+      where: { slug: "classical-body-face" },
+    });
+    const tariff = await db.courseTariff.findFirstOrThrow({
+      where: { courseId: c.id },
+    });
+    await h.click("a:card:courses:" + c.id);
+    await h.click("a:ctar:" + c.id + ":0");
+    await h.click("a:card:tariffs:" + tariff.id);
+    await h.click("a:tr:ct:" + c.id + ":KZ");
+    await h.click("a:tr:tt:" + tariff.id + ":KZ");
+    await db.courseTranslation.create({
+      data: {
+        id: "ct-" + "x".repeat(25),
+        courseId: course.id,
+        language: "RU",
+        title: "Legacy",
+      },
+    });
+    await h.click("a:tr:ct:" + course.id + ":RU");
     expect(await db.telegramBotError.count()).toBe(0);
     for (const call of h.calls) {
       const markup = call.payload.reply_markup as
