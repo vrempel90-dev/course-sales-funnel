@@ -401,6 +401,16 @@ export class ClientBot {
       country === "KZ"
         ? current.selectedTariff.priceKZT
         : current.selectedTariff.priceRUB;
+    const isKaspiCheckout =
+      country === "KZ" &&
+      setting.requisites.startsWith("https://pay.kaspi.kz/");
+    const kaspiInstruction =
+      user.language === "KZ"
+        ? "1. Төмендегі батырма арқылы нақты соманы төлеңіз.\n2. Ботқа оралып, «Төледім» батырмасын басыңыз.\n3. Kaspi-дің түпнұсқа фискалдық PDF-чегін жіберіңіз — бот оны автоматты түрде тексереді."
+        : "1. Оплатите точную сумму по кнопке ниже.\n2. Вернитесь в бот и нажмите «Я оплатил(а)».\n3. Отправьте исходный фискальный чек Kaspi в формате PDF — бот проверит его автоматически.";
+    const effectiveInstruction = isKaspiCheckout
+      ? kaspiInstruction
+      : setting.instruction;
     const activeKey = [user.id, current.selectedTariff.id, country].join(":");
     let payment = await this.db.payment.findUnique({ where: { activeKey } });
     if (!payment) {
@@ -413,7 +423,7 @@ export class ClientBot {
           currency,
           country,
           paymentMethod: setting.title,
-          instruction: setting.instruction,
+          instruction: effectiveInstruction,
           requisites: setting.requisites,
           activeKey,
           status: "PENDING",
@@ -439,9 +449,6 @@ export class ClientBot {
       user.language === "KZ"
         ? current.selectedTariff.titleKz || current.selectedTariff.titleRu
         : current.selectedTariff.titleRu;
-    const isKaspiCheckout =
-      country === "KZ" &&
-      setting.requisites.startsWith("https://pay.kaspi.kz/");
     const text =
       "💳 " +
       title(user.language, current.selectedCourse) +
@@ -452,7 +459,7 @@ export class ClientBot {
       " " +
       (currency === "KZT" ? "₸" : "₽") +
       "\n\n" +
-      setting.instruction +
+      effectiveInstruction +
       (isKaspiCheckout ? "" : "\n\n" + setting.requisites);
     const paymentKeyboard = new InlineKeyboard();
     if (isKaspiCheckout) {
