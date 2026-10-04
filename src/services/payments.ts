@@ -64,6 +64,7 @@ export class PaymentService {
               userId: payment.userId,
               courseId: payment.courseId,
               paymentId: id,
+              tariffId: payment.tariffId,
               status: "ACTIVE",
               accessStatus: "PENDING",
             },
@@ -74,6 +75,7 @@ export class PaymentService {
             data: {
               status: "ACTIVE",
               paymentId: id,
+              tariffId: payment.tariffId,
               accessStatus: "PENDING",
               accessGrantedAt: null,
               joinedAt: null,
