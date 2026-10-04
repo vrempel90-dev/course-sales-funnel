@@ -1,4 +1,3 @@
-import { getDocument } from "pdfjs-dist/legacy/build/pdf.mjs";
 import { createCanvas } from "@napi-rs/canvas";
 import jsqrPackage from "jsqr";
 
@@ -334,6 +333,7 @@ async function verifyKaspiReceiptUrl(input: {
 }
 
 async function extractPdfTextAndLinks(buffer: Buffer) {
+  const { getDocument } = await import("pdfjs-dist/legacy/build/pdf.mjs");
   if (buffer.length < 5 || buffer.subarray(0, 5).toString("ascii") !== "%PDF-") {
     throw new Error("Not a PDF");
   }
