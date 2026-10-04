@@ -161,22 +161,21 @@ export class ClientBot {
       data: {
         primaryGoal: "FAMILY",
         experienceLevel: null,
+        familyProblem: null,
         beautyProfession: null,
-        conversationStep: "FAMILY_PROBLEM",
+        conversationStep: "IDLE",
+        currentFunnelStage: "QUESTIONNAIRE_COMPLETED",
       },
     });
     await this.event(user.id, "PRIMARY_GOAL_SELECTED", null, null, {
       goal: "FAMILY",
     });
-    const k = new InlineKeyboard()
-      .text(t.backNeck, "c:family:BACK_NECK")
-      .row()
-      .text(t.legs, "c:family:LEGS_SWELLING_FATIGUE")
-      .row()
-      .text(t.homeRelax, "c:family:HOME_RELAXATION")
-      .row()
-      .text(t.back, "c:welcome");
-    await ctx.reply(t.familyQuestion, { reply_markup: k });
+    await ctx.reply(t.familyBenefit, {
+      reply_markup: new InlineKeyboard()
+        .text(t.familyBonus, "c:bonus:family")
+        .row()
+        .text(t.back, "c:welcome"),
+    });
   }
 
   async beauty(ctx: Context, user: User) {
@@ -603,18 +602,15 @@ export class ClientBot {
         reply_markup: new InlineKeyboard().text(t.professionalBonus, "c:bonus:professional"),
       });
     } else if (action === "family") {
-      if (!["BACK_NECK", "LEGS_SWELLING_FATIGUE", "HOME_RELAXATION"].includes(value))
-        throw new AppError("Некорректный выбор");
+      // Backward compatibility for old inline buttons that may still exist
+      // in previously sent messages. The diagnostic step has been removed.
       await this.db.user.update({
         where: { id: user.id },
         data: {
-          familyProblem: value as FamilyProblem,
+          familyProblem: null,
           conversationStep: "IDLE",
           currentFunnelStage: "QUESTIONNAIRE_COMPLETED",
         },
-      });
-      await this.event(user.id, "QUALIFICATION_ANSWERED", null, null, {
-        familyProblem: value,
       });
       const t = tr(user.language);
       await ctx.reply(t.familyBenefit, {
@@ -643,7 +639,10 @@ export class ClientBot {
             : value === "DEPILATION"
               ? t.beautyDepilation
               : t.beautyLashes;
-      await ctx.reply(answer + "\n\n" + t.beautyBonusText, {
+      const message = answer
+        ? answer + "\n\n" + t.beautyBonusText
+        : t.beautyBonusText;
+      await ctx.reply(message, {
         reply_markup: new InlineKeyboard().text(t.beautyBonus, "c:bonus:beauty"),
       });
     } else if (action === "bonus") {
@@ -652,23 +651,7 @@ export class ClientBot {
       await this.sendBonus(ctx, user, value as "professional" | "family" | "beauty");
       if (value === "professional") await this.listCourses(ctx, user, "professional");
       else if (value === "family") {
-        const current = await this.db.user.findUniqueOrThrow({ where: { id: user.id } });
-        const recommended =
-          current.familyProblem === "BACK_NECK"
-            ? ["back-without-pain"]
-            : current.familyProblem === "LEGS_SWELLING_FATIGUE"
-              ? ["light-legs-home"]
-              : ["home-massage-therapist"];
-        await this.listCourses(ctx, user, "home", recommended);
-        await ctx.reply(
-          user.language === "KZ" ? "Барлық үй бағдарламалары:" : "Все программы для дома:",
-          {
-            reply_markup: new InlineKeyboard().text(
-              user.language === "KZ" ? "📚 Барлығын көру" : "📚 Посмотреть все",
-              "c:segment:home",
-            ),
-          },
-        );
+        await this.listCourses(ctx, user, "home");
       } else {
         const current = await this.db.user.findUniqueOrThrow({ where: { id: user.id } });
         const recommended =
