@@ -455,8 +455,8 @@ export class ClientBot {
       paymentKeyboard
         .url(
           user.language === "KZ"
-            ? "💳 Kaspi арқылы төлеу"
-            : "💳 Оплатить через Kaspi",
+            ? "💳 " + money(amount) + " ₸ Kaspi арқылы төлеу"
+            : "💳 Оплатить " + money(amount) + " ₸ через Kaspi",
           setting.requisites,
         )
         .row();
@@ -686,13 +686,53 @@ export class ClientBot {
       if (payment.userId !== user.id) throw new AppError("Оплата недоступна");
       if (!["PENDING", "REJECTED"].includes(payment.status))
         throw new AppError("Оплата уже передана на проверку или обработана");
-      await this.db.user.update({
-        where: { id: user.id },
-        data: { activePaymentId: payment.id, conversationStep: "RECEIPT" },
-      });
-      await ctx.reply(tr(user.language).sendReceipt, {
-        reply_markup: backMenu(user.language),
-      });
+
+      const isKaspiLink =
+        payment.country === "KZ" &&
+        payment.paymentMethod.toLowerCase().includes("kaspi") &&
+        payment.requisites.startsWith("https://pay.kaspi.kz/");
+
+      if (isKaspiLink) {
+        await this.db.$transaction(async (tx) => {
+          await tx.payment.update({
+            where: { id: payment.id },
+            data: {
+              status: "PENDING_REVIEW",
+              rejectionReason: null,
+            },
+          });
+          await tx.user.update({
+            where: { id: user.id },
+            data: {
+              activePaymentId: payment.id,
+              conversationStep: "IDLE",
+              currentFunnelStage: "PAYMENT_REVIEW",
+            },
+          });
+          await tx.funnelEvent.create({
+            data: {
+              userId: user.id,
+              courseId: payment.courseId,
+              tariffId: payment.tariffId,
+              type: "PAYMENT_CLAIMED",
+              metadata: { paymentId: payment.id, provider: "kaspi_link" },
+            },
+          });
+        });
+        const updated = await this.db.user.findUniqueOrThrow({ where: { id: user.id } });
+        await ctx.reply(tr(user.language).kaspiChecking, {
+          reply_markup: menuKeyboard(user.language),
+        });
+        await this.notifyPayment(ctx, updated, payment.id);
+      } else {
+        await this.db.user.update({
+          where: { id: user.id },
+          data: { activePaymentId: payment.id, conversationStep: "RECEIPT" },
+        });
+        await ctx.reply(tr(user.language).sendReceipt, {
+          reply_markup: backMenu(user.language),
+        });
+      }
     } else if (action === "ask") {
       await this.ask(ctx, user, value === "none" ? undefined : value);
     } else if (action === "trial") await this.trial(ctx, user, value);
@@ -744,6 +784,8 @@ export class ClientBot {
       "Клиент: " +
       user.firstName +
       (user.telegramUsername ? " @" + user.telegramUsername : "") +
+      "\nTelegram ID: " +
+      user.telegramId +
       "\nКурс: " +
       payment.course.title +
       "\nТариф: " +
@@ -751,23 +793,30 @@ export class ClientBot {
       "\nСумма: " +
       money(payment.amount) +
       " " +
-      payment.currency;
+      payment.currency +
+      (payment.country === "KZ" && payment.paymentMethod.toLowerCase().includes("kaspi")
+        ? "\n\n⚠️ Подтверждайте только после проверки фактического поступления в Kaspi Pay."
+        : "");
     const keyboard = new InlineKeyboard()
       .text("✅ Подтвердить", "a:approve:" + payment.id)
       .text("❌ Отклонить", "a:reject:" + payment.id)
       .row()
       .text("👤 Клиент", "a:card:clients:" + user.id);
     for (const admin of admins) {
-      if (!admin.telegramId || !payment.receiptFileId) continue;
+      if (!admin.telegramId) continue;
       try {
-        if (payment.receiptType === "photo")
+        if (payment.receiptFileId && payment.receiptType === "photo")
           await ctx.api.sendPhoto(admin.telegramId.toString(), payment.receiptFileId, {
             caption,
             reply_markup: keyboard,
           });
-        else
+        else if (payment.receiptFileId)
           await ctx.api.sendDocument(admin.telegramId.toString(), payment.receiptFileId, {
             caption,
+            reply_markup: keyboard,
+          });
+        else
+          await ctx.api.sendMessage(admin.telegramId.toString(), caption, {
             reply_markup: keyboard,
           });
       } catch {
