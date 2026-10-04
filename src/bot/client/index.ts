@@ -1,9 +1,7 @@
 import {
   BeautyProfession,
   Country,
-  FamilyProblem,
   Language,
-  PrimaryGoal,
   Prisma,
   PrismaClient,
   User,
