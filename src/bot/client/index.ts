@@ -447,13 +447,29 @@ export class ClientBot {
       setting.instruction +
       "\n\n" +
       setting.requisites;
+    const paymentKeyboard = new InlineKeyboard();
+    if (
+      country === "KZ" &&
+      setting.requisites.startsWith("https://pay.kaspi.kz/")
+    ) {
+      paymentKeyboard
+        .url(
+          user.language === "KZ"
+            ? "💳 Kaspi арқылы төлеу"
+            : "💳 Оплатить через Kaspi",
+          setting.requisites,
+        )
+        .row();
+    }
+    paymentKeyboard
+      .text(t.paid, "c:paid:" + payment.id)
+      .row()
+      .text(t.ask, "c:ask:" + current.selectedCourse.id)
+      .row()
+      .text(t.mainMenu, "c:menu");
+
     await ctx.reply(text, {
-      reply_markup: new InlineKeyboard()
-        .text(t.paid, "c:paid:" + payment.id)
-        .row()
-        .text(t.ask, "c:ask:" + current.selectedCourse.id)
-        .row()
-        .text(t.mainMenu, "c:menu"),
+      reply_markup: paymentKeyboard,
     });
   }
 
