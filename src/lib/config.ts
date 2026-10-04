@@ -11,6 +11,12 @@ export function runtimeConfig(env: NodeJS.ProcessEnv = process.env) {
       // the whole Railway service at config-parse time. This lets /start
       // respond with the sender's numeric Telegram ID so initial setup is easy.
       OWNER_TELEGRAM_ID: z.string().optional(),
+      KASPI_MERCHANT_BIN: z.string().regex(/^\d{12}$/).optional(),
+      KASPI_RECEIPT_MAX_AGE_MINUTES: z.coerce
+        .number()
+        .int()
+        .positive()
+        .default(1440),
       NODE_ENV: z
         .enum(["development", "production", "test"])
         .default("development"),
