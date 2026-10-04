@@ -7,11 +7,13 @@ import { WizardView } from "./admin/wizards";
 import { authenticate } from "./middleware/admin";
 import { registerAdmin } from "./commands/admin";
 import { callback } from "./callbacks/admin";
+
 export function createBot(token: string, db: PrismaClient, username?: string) {
   const bot = new Bot(token),
     flows = new Conversations(db),
     views = new AdminViews(db, flows, username),
     wizard = new WizardView(db, flows);
+
   bot.use(async (ctx, next) => {
     try {
       await next();
@@ -21,10 +23,12 @@ export function createBot(token: string, db: PrismaClient, username?: string) {
           updateId: ctx.update.update_id,
           section: "admin",
         });
+
       const text =
         error instanceof AppError
           ? error.message
           : "Не удалось выполнить действие. Попробуйте ещё раз.";
+
       try {
         if (ctx.callbackQuery)
           await ctx.answerCallbackQuery({
@@ -37,26 +41,61 @@ export function createBot(token: string, db: PrismaClient, username?: string) {
       }
     }
   });
+
+  // Setup helper only. The client sales flow is intentionally not implemented
+  // in this admin-only release.
+  bot.command("start", async (ctx) => {
+    if (!ctx.from || ctx.chat.type !== "private") return;
+
+    const admin = await db.adminUser.findUnique({
+      where: { telegramId: BigInt(ctx.from.id) },
+    });
+
+    if (admin?.active) {
+      await ctx.reply(
+        "✅ Бот запущен.\n\nДля входа в административную панель отправьте /admin.",
+      );
+      return;
+    }
+
+    await ctx.reply(
+      [
+        "✅ Бот запущен.",
+        "",
+        "Сейчас развёрнута только Telegram-админка.",
+        "",
+        `Ваш Telegram ID: ${ctx.from.id}`,
+        "",
+        "Укажите это число в Railway в переменной OWNER_TELEGRAM_ID, дождитесь перезапуска сервиса и затем отправьте /admin.",
+      ].join("\n"),
+    );
+  });
+
   registerAdmin(bot, db, views, flows);
+
   bot.on("callback_query:data", async (ctx) => {
     const admin = await authenticate(ctx, db);
     await callback(ctx, admin, db, views, wizard, flows);
     await ctx.answerCallbackQuery().catch(() => {});
   });
+
   bot.on("message", async (ctx) => {
     if (ctx.message.text?.startsWith("/")) {
       const admin = await authenticate(ctx, db);
       await ctx.reply("Доступны /admin и /cancel. " + admin.role);
       return;
     }
+
     const admin = await authenticate(ctx, db);
     const result = await wizard.message(ctx, admin);
     if (result && typeof result === "object")
       await views.list(ctx, admin, "clients", "search", 0);
     else if (!result) await ctx.reply("Откройте /admin и выберите действие.");
   });
+
   bot.catch(async (error) => {
     await recordError(db, error.error, { section: "bot-catch" });
   });
+
   return bot;
 }
