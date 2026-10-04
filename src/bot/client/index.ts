@@ -568,7 +568,11 @@ export class ClientBot {
         experience: value,
       });
       const t = tr(user.language);
-      await ctx.reply(t.professionalBenefit, {
+      const professionalMessage =
+        value === "BEGINNER"
+          ? t.professionalBenefit
+          : t.professionalExperiencedBenefit;
+      await ctx.reply(professionalMessage, {
         reply_markup: new InlineKeyboard().text(t.professionalBonus, "c:bonus:professional"),
       });
     } else if (action === "family") {
