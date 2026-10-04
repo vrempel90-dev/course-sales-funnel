@@ -93,15 +93,11 @@ export class ClientBot {
 
   async start(ctx: Context) {
     const user = await this.ensureUser(ctx);
-    if (!user.language) {
-      await this.db.user.update({
-        where: { id: user.id },
-        data: { conversationStep: "LANGUAGE" },
-      });
-      await ctx.reply(tr(null).chooseLanguage, { reply_markup: langKeyboard() });
-      return;
-    }
-    await this.showMenu(ctx, user);
+    await this.db.user.update({
+      where: { id: user.id },
+      data: { conversationStep: "LANGUAGE" },
+    });
+    await ctx.reply(tr(null).chooseLanguage, { reply_markup: langKeyboard() });
   }
 
   async showMenu(ctx: Context, user: User) {
@@ -123,9 +119,7 @@ export class ClientBot {
       .row()
       .text(t.goalFamily, "c:goal:FAMILY")
       .row()
-      .text(t.goalBeauty, "c:goal:BEAUTY")
-      .row()
-      .text(t.mainMenu, "c:menu");
+      .text(t.goalBeauty, "c:goal:BEAUTY");
     await ctx.reply(t.welcome, { reply_markup: k });
   }
 
