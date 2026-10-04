@@ -1,3 +1,5 @@
+BEGIN;
+
 -- CreateEnum
 CREATE TYPE "Language" AS ENUM ('RU', 'KZ');
 
@@ -236,3 +238,5 @@ CREATE INDEX "User_language_createdAt_idx" ON "User"(language,"createdAt");
 CREATE INDEX "User_primaryGoal_idx" ON "User"("primaryGoal");
 CREATE INDEX "Payment_tariffId_idx" ON "Payment"("tariffId");
 CREATE INDEX "Enrollment_tariffId_idx" ON "Enrollment"("tariffId");
+
+COMMIT;
