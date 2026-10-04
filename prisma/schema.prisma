@@ -343,6 +343,12 @@ model Payment {
   receiptFileId     String?
   receiptType       String?       @map("receiptFileType")
   receiptRevision   Int           @default(0)
+  receiptHash       String?       @unique
+  receiptKey        String?       @unique
+  receiptUrl        String?
+  receiptDate       DateTime?
+  receiptMerchantBin String?
+  verifiedAt        DateTime?
   createdAt         DateTime      @default(now())
   reviewedAt        DateTime?
   reviewedByAdminId String?       @map("reviewedBy")
