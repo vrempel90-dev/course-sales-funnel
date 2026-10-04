@@ -8,17 +8,20 @@ import { safeError, recordError } from "./lib/errors";
 import { createBot } from "./bot";
 import { bootstrapOwner } from "./services/auth";
 import { healthServer } from "./health";
+
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const leaseOwner = randomUUID();
 let running = true;
 const config = runtimeConfig();
 const server = healthServer(db, !!config.TELEGRAM_BOT_TOKEN);
+
 process.on("SIGINT", () => {
   running = false;
 });
 process.on("SIGTERM", () => {
   running = false;
 });
+
 async function lease() {
   await db.workerLease.upsert({
     where: { id: "bot-worker" },
@@ -37,13 +40,26 @@ async function lease() {
     ).count > 0
   );
 }
+
 async function main() {
   await db.$connect();
-  await bootstrapOwner(db, config.OWNER_TELEGRAM_ID);
+
+  if (config.OWNER_TELEGRAM_ID) {
+    try {
+      await bootstrapOwner(db, config.OWNER_TELEGRAM_ID);
+    } catch (error) {
+      console.warn(
+        "OWNER_TELEGRAM_ID is not a valid numeric Telegram user ID; bot will start so /start can show the correct ID.",
+        safeError(error),
+      );
+    }
+  }
+
   await new Promise<void>((resolve, reject) => {
     server.once("error", reject);
     server.listen(config.PORT, "0.0.0.0", resolve);
   });
+
   if (!config.TELEGRAM_BOT_TOKEN) {
     console.info(
       "Telegram token absent: health server active; Telegram processing disabled.",
@@ -51,16 +67,17 @@ async function main() {
     while (running) await sleep(500);
     return;
   }
-  if (!config.OWNER_TELEGRAM_ID)
-    throw new Error("OWNER_TELEGRAM_ID is required when Telegram is enabled");
+
   const bot = createBot(
     config.TELEGRAM_BOT_TOKEN,
     db,
     config.TELEGRAM_BOT_USERNAME,
   );
   await bot.init();
+
   let hasLease = false,
     configured = false;
+
   const heartbeat = setInterval(() => {
     if (hasLease)
       void lease()
@@ -75,6 +92,7 @@ async function main() {
           process.exitCode = 1;
         });
   }, 10000);
+
   try {
     while (running) {
       if (!(await lease())) {
@@ -82,25 +100,30 @@ async function main() {
         continue;
       }
       hasLease = true;
+
       try {
         if (!configured) {
           await bot.api.deleteWebhook({ drop_pending_updates: false });
           await bot.api.setMyCommands([
+            { command: "start", description: "Запустить бота" },
             { command: "admin", description: "Админ-панель" },
             { command: "cancel", description: "Отменить действие" },
           ]);
           configured = true;
         }
+
         const offset = Number(
           (await db.setting.findUnique({ where: { key: "telegram.offset" } }))
             ?.value ?? 0,
         );
+
         const updates = await bot.api.getUpdates({
           offset,
           timeout: 1,
           limit: 100,
           allowed_updates: ["message", "callback_query"],
         });
+
         for (const update of updates)
           await db.$transaction(async (tx) => {
             await tx.telegramUpdate.upsert({
@@ -117,11 +140,13 @@ async function main() {
               create: { key: "telegram.offset", value: update.update_id + 1 },
             });
           });
+
         const pending = await db.telegramUpdate.findMany({
           where: { processedAt: null, attempts: { lt: 5 } },
           orderBy: { id: "asc" },
           take: 50,
         });
+
         for (const update of pending) {
           if (!running || !hasLease) break;
           try {
@@ -141,6 +166,7 @@ async function main() {
             });
           }
         }
+
         await db.adminConversationState.deleteMany({
           where: { expiresAt: { lt: new Date() } },
         });
@@ -148,6 +174,7 @@ async function main() {
         console.error("Worker iteration failed:", safeError(error));
         await recordError(db, error, { section: "worker" });
       }
+
       await sleep(config.WORKER_INTERVAL_MS);
     }
   } finally {
@@ -157,6 +184,7 @@ async function main() {
     });
   }
 }
+
 main()
   .catch((error) => {
     console.error(safeError(error));
