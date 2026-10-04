@@ -658,7 +658,7 @@ export class ClientBot {
             : current.beautyProfession === "HAIR"
               ? ["express-neck-head"]
               : current.beautyProfession === "DEPILATION"
-                ? ["express-legs"]
+                ? ["express-legs", "express-hands"]
                 : ["express-face", "guasha"];
         await this.listCourses(ctx, user, "beauty", recommended);
       }
