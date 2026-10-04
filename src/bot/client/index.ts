@@ -255,11 +255,8 @@ export class ClientBot {
     await this.event(user.id, "COURSES_SHOWN", null, null, { category: categorySlug });
     const k = new InlineKeyboard();
     for (const course of rows) {
-      const minKzt = course.tariffs.length
-        ? Math.min(...course.tariffs.map((x) => Number(x.priceKZT)))
-        : Number(course.priceKZT);
       k.text(
-        title(user.language, course) + " · от " + money(minKzt) + " ₸",
+        title(user.language, course),
         "c:course:" + course.id,
       ).row();
     }
