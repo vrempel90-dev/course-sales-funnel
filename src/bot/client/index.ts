@@ -9,7 +9,12 @@ import {
   User,
 } from "@prisma/client";
 import { Context, InlineKeyboard } from "grammy";
+import { createHash } from "node:crypto";
 import { AppError, safeError } from "../../lib/errors";
+import { verifyKaspiReceiptPdf } from "../../services/kaspi_receipt_verifier";
+import { PaymentService } from "../../services/payments";
+import { AccessService } from "../../services/access";
+import { GrammyGateway } from "../gateway";
 import { courseTitleKz, tr } from "./i18n";
 
 const money = (value: Prisma.Decimal | number | string) =>
@@ -691,47 +696,14 @@ export class ClientBot {
         payment.paymentMethod.toLowerCase().includes("kaspi") &&
         payment.requisites.startsWith("https://pay.kaspi.kz/");
 
-      if (isKaspiLink) {
-        await this.db.$transaction(async (tx) => {
-          await tx.payment.update({
-            where: { id: payment.id },
-            data: {
-              status: "PENDING_REVIEW",
-              rejectionReason: null,
-            },
-          });
-          await tx.user.update({
-            where: { id: user.id },
-            data: {
-              activePaymentId: payment.id,
-              conversationStep: "IDLE",
-              currentFunnelStage: "PAYMENT_REVIEW",
-            },
-          });
-          await tx.funnelEvent.create({
-            data: {
-              userId: user.id,
-              courseId: payment.courseId,
-              tariffId: payment.tariffId,
-              type: "PAYMENT_CLAIMED",
-              metadata: { paymentId: payment.id, provider: "kaspi_link" },
-            },
-          });
-        });
-        const updated = await this.db.user.findUniqueOrThrow({ where: { id: user.id } });
-        await ctx.reply(tr(user.language).kaspiChecking, {
-          reply_markup: menuKeyboard(user.language),
-        });
-        await this.notifyPayment(ctx, updated, payment.id);
-      } else {
-        await this.db.user.update({
-          where: { id: user.id },
-          data: { activePaymentId: payment.id, conversationStep: "RECEIPT" },
-        });
-        await ctx.reply(tr(user.language).sendReceipt, {
-          reply_markup: backMenu(user.language),
-        });
-      }
+      await this.db.user.update({
+        where: { id: user.id },
+        data: { activePaymentId: payment.id, conversationStep: "RECEIPT" },
+      });
+      await ctx.reply(
+        isKaspiLink ? tr(user.language).sendKaspiPdf : tr(user.language).sendReceipt,
+        { reply_markup: backMenu(user.language) },
+      );
     } else if (action === "ask") {
       await this.ask(ctx, user, value === "none" ? undefined : value);
     } else if (action === "trial") await this.trial(ctx, user, value);
@@ -833,16 +805,236 @@ export class ClientBot {
     const t = tr(user.language);
     if (user.conversationStep === "RECEIPT") {
       if (!user.activePaymentId) throw new AppError("Активная оплата не найдена");
+      const payment = await this.db.payment.findUniqueOrThrow({
+        where: { id: user.activePaymentId },
+        include: { course: true, tariff: true },
+      });
+      if (payment.userId !== user.id) throw new AppError("Оплата недоступна");
+
+      const isKaspi =
+        payment.country === "KZ" &&
+        payment.paymentMethod.toLowerCase().includes("kaspi") &&
+        payment.requisites.startsWith("https://pay.kaspi.kz/");
+
+      if (isKaspi) {
+        const doc = ctx.message?.document;
+        if (!doc || doc.mime_type !== "application/pdf") {
+          await ctx.reply(t.kaspiPdfOnly);
+          return true;
+        }
+        if (doc.file_size && doc.file_size > 10_000_000) {
+          await ctx.reply(t.kaspiPdfTooLarge);
+          return true;
+        }
+        const token = process.env.TELEGRAM_BOT_TOKEN;
+        const merchantBin = process.env.KASPI_MERCHANT_BIN;
+        const maxAge = Number(process.env.KASPI_RECEIPT_MAX_AGE_MINUTES || "1440");
+        if (!token || !merchantBin) {
+          await ctx.reply(
+            user.language === "KZ"
+              ? "Автоматты Kaspi тексеруі әзірге толық бапталмаған. Әкімшіге хабар берілді."
+              : "Автоматическая проверка Kaspi пока не полностью настроена. Администратор уведомлён.",
+          );
+          return true;
+        }
+
+        await ctx.reply(t.kaspiPdfChecking);
+        try {
+          const file = await ctx.api.getFile(doc.file_id);
+          if (!file.file_path) throw new Error("Telegram file path is missing");
+          const response = await fetch(
+            `https://api.telegram.org/file/bot${token}/${file.file_path}`,
+            { signal: AbortSignal.timeout(10_000) },
+          );
+          if (!response.ok) throw new Error(`Telegram file HTTP ${response.status}`);
+          const pdf = Buffer.from(await response.arrayBuffer());
+          if (pdf.length > 10_000_000) throw new Error("Receipt PDF is too large");
+
+          const verification = await verifyKaspiReceiptPdf({
+            buffer: pdf,
+            expectedAmount: Number(payment.amount),
+            expectedMerchantBin: merchantBin,
+            maxAgeMinutes: Number.isFinite(maxAge) && maxAge > 0 ? maxAge : 1440,
+            paymentRequestedAt: payment.createdAt,
+          });
+
+          if (!verification.ok) {
+            const reviewable = new Set([
+              "receipt_id_unreadable",
+              "fetch_failed",
+              "not_fiscal",
+              "amount_unreadable",
+              "merchant_unreadable",
+              "date_unreadable",
+              "pdf_unreadable",
+            ]);
+
+            if (reviewable.has(verification.code)) {
+              const hash = createHash("sha256").update(pdf).digest("hex");
+              const duplicate = await this.db.payment.findFirst({
+                where: {
+                  id: { not: payment.id },
+                  OR: [{ receiptHash: hash }],
+                },
+              });
+              if (duplicate) {
+                await ctx.reply(t.kaspiReceiptUsed);
+                return true;
+              }
+              await this.db.$transaction(async (tx) => {
+                await tx.payment.update({
+                  where: { id: payment.id },
+                  data: {
+                    status: "PENDING_REVIEW",
+                    receiptFileId: doc.file_id,
+                    receiptType: "document",
+                    receiptHash: hash,
+                    receiptRevision: { increment: 1 },
+                    rejectionReason: verification.code,
+                  },
+                });
+                await tx.user.update({
+                  where: { id: user.id },
+                  data: {
+                    conversationStep: "IDLE",
+                    currentFunnelStage: "PAYMENT_REVIEW",
+                  },
+                });
+              });
+              const updated = await this.db.user.findUniqueOrThrow({ where: { id: user.id } });
+              await this.notifyPayment(ctx, updated, payment.id);
+              await ctx.reply(t.kaspiReceiptReviewPending, {
+                reply_markup: menuKeyboard(user.language),
+              });
+              return true;
+            }
+
+            const localized =
+              verification.code === "amount_mismatch"
+                ? (user.language === "KZ"
+                    ? "Чектегі сома таңдалған тариф бағасына сәйкес келмейді."
+                    : "Сумма в чеке не совпадает со стоимостью выбранного тарифа.")
+                : verification.code === "merchant_mismatch"
+                  ? (user.language === "KZ"
+                      ? "Чек басқа алушыға рәсімделген."
+                      : "Чек выписан другому получателю.")
+                  : verification.code === "too_old"
+                    ? (user.language === "KZ"
+                        ? "Бұл чек тексеру мерзімінен ескі."
+                        : "Этот чек слишком старый для текущей оплаты.")
+                    : verification.code === "future_date"
+                      ? (user.language === "KZ"
+                          ? "Чек күні дұрыс емес."
+                          : "Дата или время чека некорректны.")
+                      : verification.message;
+            await ctx.reply("❌ " + localized.replace(/^❌\s*/, ""));
+            return true;
+          }
+
+          const hash = createHash("sha256").update(pdf).digest("hex");
+          const receipt = verification.receipt;
+          const duplicate = await this.db.payment.findFirst({
+            where: {
+              id: { not: payment.id },
+              OR: [{ receiptHash: hash }, { receiptKey: receipt.receiptKey }],
+            },
+          });
+          if (duplicate) {
+            await ctx.reply(t.kaspiReceiptUsed);
+            return true;
+          }
+
+          await this.db.$transaction(async (tx) => {
+            await tx.payment.update({
+              where: { id: payment.id },
+              data: {
+                status: "PENDING_REVIEW",
+                receiptFileId: doc.file_id,
+                receiptType: "document",
+                receiptHash: hash,
+                receiptKey: receipt.receiptKey,
+                receiptUrl: receipt.url,
+                receiptDate: receipt.receiptDate,
+                receiptMerchantBin: receipt.merchantBin,
+                verifiedAt: new Date(),
+                receiptRevision: { increment: 1 },
+                rejectionReason: null,
+              },
+            });
+            await tx.user.update({
+              where: { id: user.id },
+              data: {
+                conversationStep: "IDLE",
+                currentFunnelStage: "PAYMENT_REVIEW",
+              },
+            });
+            await tx.funnelEvent.create({
+              data: {
+                userId: user.id,
+                courseId: payment.courseId,
+                tariffId: payment.tariffId,
+                type: "KASPI_RECEIPT_VERIFIED",
+                metadata: {
+                  paymentId: payment.id,
+                  receiptKey: receipt.receiptKey,
+                },
+              },
+            });
+          });
+
+          const owner = await this.db.adminUser.findFirst({
+            where: { role: "OWNER", active: true },
+            orderBy: { createdAt: "asc" },
+          });
+          if (!owner) throw new Error("Active OWNER admin not found");
+
+          await new PaymentService(this.db).review(owner.id, payment.id, true);
+          const enrollment = await this.db.enrollment.findUnique({
+            where: { paymentId: payment.id },
+          });
+
+          let invite: string | null = null;
+          if (enrollment) {
+            const access = await new AccessService(
+              this.db,
+              new GrammyGateway(ctx.api),
+            ).retry(enrollment.id, owner.id);
+            if (
+              access.accessStatus === "GRANTED" &&
+              access.telegramInviteLink &&
+              (!access.inviteExpiresAt || access.inviteExpiresAt > new Date())
+            ) {
+              invite = access.telegramInviteLink;
+            }
+          }
+
+          const buttons = new InlineKeyboard();
+          if (invite)
+            buttons.url(
+              user.language === "KZ" ? "🎓 Оқуға өту" : "🎓 Перейти к обучению",
+              invite,
+            ).row();
+          buttons.text(t.mainMenu, "c:menu");
+
+          await ctx.reply(
+            t.kaspiReceiptApproved +
+              (invite ? "" : "\n\n" + t.approvedManual),
+            { reply_markup: buttons },
+          );
+          return true;
+        } catch (error) {
+          console.error("Automatic Kaspi receipt verification failed:", safeError(error));
+          await ctx.reply(t.kaspiReceiptApplyFailed);
+          return true;
+        }
+      }
+
       const photo = ctx.message?.photo?.at(-1);
       const doc = ctx.message?.document;
       if (!photo && !doc) {
         await ctx.reply(t.sendReceipt);
         return true;
       }
-      const payment = await this.db.payment.findUniqueOrThrow({
-        where: { id: user.activePaymentId },
-      });
-      if (payment.userId !== user.id) throw new AppError("Оплата недоступна");
       const fileId = photo?.file_id ?? doc!.file_id;
       const receiptType = photo ? "photo" : "document";
       await this.db.$transaction(async (tx) => {
