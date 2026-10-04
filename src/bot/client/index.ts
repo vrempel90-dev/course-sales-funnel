@@ -434,6 +434,9 @@ export class ClientBot {
       user.language === "KZ"
         ? current.selectedTariff.titleKz || current.selectedTariff.titleRu
         : current.selectedTariff.titleRu;
+    const isKaspiCheckout =
+      country === "KZ" &&
+      setting.requisites.startsWith("https://pay.kaspi.kz/");
     const text =
       "💳 " +
       title(user.language, current.selectedCourse) +
@@ -445,13 +448,9 @@ export class ClientBot {
       (currency === "KZT" ? "₸" : "₽") +
       "\n\n" +
       setting.instruction +
-      "\n\n" +
-      setting.requisites;
+      (isKaspiCheckout ? "" : "\n\n" + setting.requisites);
     const paymentKeyboard = new InlineKeyboard();
-    if (
-      country === "KZ" &&
-      setting.requisites.startsWith("https://pay.kaspi.kz/")
-    ) {
+    if (isKaspiCheckout) {
       paymentKeyboard
         .url(
           user.language === "KZ"
