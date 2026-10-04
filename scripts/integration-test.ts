@@ -64,6 +64,57 @@ async function main() {
           "utf8",
         ),
       );
+      await legacy.query(
+        await readFile(
+          "prisma/migrations/20261004100000_catalog_localization/migration.sql",
+          "utf8",
+        ),
+      );
+      assert.equal(
+        (
+          await legacy.query(
+            'SELECT "priceKZT" FROM "CourseTariff" WHERE "courseId"=\'c\'',
+          )
+        ).rows[0].priceKZT,
+        "100.00",
+      );
+      assert.equal(
+        (
+          await legacy.query(
+            'SELECT "priceRUB" FROM "CourseTariff" WHERE "courseId"=\'c\'',
+          )
+        ).rows[0].priceRUB,
+        "20.00",
+      );
+      assert.equal(
+        (
+          await legacy.query(
+            'SELECT title FROM "CourseTranslation" WHERE "courseId"=\'c\'',
+          )
+        ).rows[0].title,
+        "Legacy",
+      );
+      assert.equal(
+        (await legacy.query('SELECT "tariffId" FROM "Payment" WHERE id=\'p\''))
+          .rows[0].tariffId,
+        "t-c",
+      );
+      assert.equal(
+        (
+          await legacy.query(
+            'SELECT "tariffId" FROM "Enrollment" WHERE id=\'e\'',
+          )
+        ).rows[0].tariffId,
+        "t-c",
+      );
+      assert.equal(
+        (
+          await legacy.query(
+            "SELECT code FROM \"CourseCategory\" WHERE id='cat'",
+          )
+        ).rows[0].code,
+        "legacy",
+      );
       assert.equal(
         (
           await legacy.query(
@@ -100,7 +151,7 @@ async function main() {
         (await legacy.query('SELECT count(*) FROM "User"')).rows[0].count,
         "1",
       );
-      console.info("Legacy migration preservation: 5 assertions passed.");
+      console.info("Legacy migration preservation: 11 assertions passed.");
     } finally {
       await legacy.end();
     }

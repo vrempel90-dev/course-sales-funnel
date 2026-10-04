@@ -4,6 +4,7 @@ import {
   PrismaClient,
 } from "@prisma/client";
 import { Context, InlineKeyboard } from "grammy";
+import { t, content } from "../../i18n";
 import { AppError } from "../../lib/errors";
 import {
   Conversations,
@@ -14,30 +15,20 @@ import {
 import { button } from "../keyboards/admin";
 import { display } from "../messages";
 import { pagination } from "../../utils/pagination";
-export const labels: Record<string, string> = {
-  true: "Да",
-  false: "Нет",
-  ANY: "Любое",
-  BEGINNER: "Новичок",
-  PRACTICING: "Практикующий",
-  PROFESSIONAL: "Профессионал",
-  UPSKILLING: "Повышение квалификации",
-  NEW_PROFESSION: "Новая профессия",
-  NEW_SERVICE: "Новая услуга",
-  PERSONAL: "Для себя",
-  DRAFT: "Черновик",
-  ACTIVE: "Активен",
-  HIDDEN: "Скрыт",
-  ARCHIVED: "Архив",
-  ADMIN: "Администратор",
-  MANAGER: "Менеджер",
-};
 export class WizardView {
   constructor(
     public db: PrismaClient,
     public flows: Conversations,
   ) {}
   async show(ctx: Context, state: AdminConversationState, page = 0) {
+    const admin = await this.db.adminUser.findUniqueOrThrow({
+      where: { id: state.adminId },
+    });
+    const tr = (key: string) => t(key, admin.language);
+    const label = (value: unknown) =>
+      tr("value." + String(value)).startsWith("value.")
+        ? String(value)
+        : tr("value." + String(value));
     const p = payload(state),
       field = fieldFor(state),
       k = new InlineKeyboard();
@@ -51,7 +42,7 @@ export class WizardView {
             await this.db.courseCategory.findUnique({
               where: { id: p.data.categoryId },
             })
-          )?.title ?? "Удалённое направление";
+          )?.title ?? t("categories.title", admin.language);
       for (const key of ["courseId", "selectedCourseId"])
         if (typeof p.data[key] === "string")
           names[key] =
@@ -59,90 +50,129 @@ export class WizardView {
               await this.db.course.findUnique({
                 where: { id: p.data[key] as string },
               })
-            )?.title ?? "Удалённый курс";
+            )?.title ?? t("courses.title", admin.language);
       const summary = Object.entries(p.data)
         .filter(
           ([key]) =>
             fields[state.flowType as keyof typeof fields].some(
               (x) => x.key === key,
             ) ||
-            ["imageFileId", "imageUrl", "demoFileId", "demoVideoUrl"].includes(
-              key,
-            ),
+            [
+              "imageFileId",
+              "imageUrl",
+              "demoFileId",
+              "demoVideoUrl",
+              "fileId",
+              "url",
+            ].includes(key),
         )
         .map(
           ([key, value]) =>
-            (fields[state.flowType as keyof typeof fields].find(
-              (x) => x.key === key,
-            )?.label ?? key) +
+            tr(
+              fields[state.flowType as keyof typeof fields].find(
+                (x) => x.key === key,
+              )?.label ??
+                (key.startsWith("image")
+                  ? "field.cover"
+                  : key.startsWith("demo")
+                    ? "field.demo"
+                    : ["fileId", "url"].includes(key)
+                      ? "field.media"
+                      : key),
+            ) +
             ": " +
-            (value == null
-              ? "—"
-              : (names[key] ?? labels[String(value)] ?? String(value))),
+            (value == null ? "—" : (names[key] ?? label(value))),
         )
         .join("\n");
-      button(k, p.id ? "✅ Сохранить" : "✅ Создать", cb("save", "ok")).row();
+      button(
+        k,
+        p.id ? tr("common.save") : tr("common.create"),
+        cb("save", "ok"),
+      ).row();
       for (const key of p.keys)
         button(
           k,
-          "✏️ " +
-            fields[state.flowType as keyof typeof fields]
-              .find((x) => x.key === key)!
-              .label.slice(0, 45),
+          tr("common.edit") +
+            " " +
+            tr(
+              fields[state.flowType as keyof typeof fields].find(
+                (x) => x.key === key,
+              )!.label,
+            ).slice(0, 45),
           cb("edit", key),
         ).row();
-      button(k, "❌ Отмена", cb("cancel", "ok"));
-      await display(ctx, "Предпросмотр\n\n" + summary, k);
+      button(k, tr("common.cancel"), cb("cancel", "ok"));
+      await display(ctx, tr("common.preview") + "\n\n" + summary, k);
       return;
     }
     if (field.type === "bool" || field.type === "choice") {
       const options =
         field.type === "bool" ? ["true", "false"] : (field.options ?? []);
       for (const value of options)
-        button(k, labels[value] ?? value, cb("pick", value)).row();
+        button(k, label(value), cb("pick", value)).row();
     }
-    if (field.type === "category" || field.type === "course") {
+    if (["category", "course", "tariff"].includes(field.type)) {
+      const where =
+        field.type === "tariff" && typeof p.data.selectedCourseId === "string"
+          ? { courseId: p.data.selectedCourseId }
+          : {};
       const total =
         field.type === "category"
           ? await this.db.courseCategory.count()
-          : await this.db.course.count();
-      const p = pagination(total, page);
+          : field.type === "course"
+            ? await this.db.course.count()
+            : await this.db.courseTariff.count({ where });
+      const pag = pagination(total, page);
+      const query = {
+        skip: pag.skip,
+        take: pag.take,
+        orderBy: [{ sortOrder: "asc" as const }, { id: "asc" as const }],
+        include: { translations: true },
+      };
       const records =
         field.type === "category"
-          ? await this.db.courseCategory.findMany({
-              skip: p.skip,
-              take: p.take,
-              orderBy: [{ sortOrder: "asc" }, { id: "asc" }],
-            })
-          : await this.db.course.findMany({
-              skip: p.skip,
-              take: p.take,
-              orderBy: [{ sortOrder: "asc" }, { id: "asc" }],
-            });
+          ? await this.db.courseCategory.findMany(query)
+          : field.type === "course"
+            ? await this.db.course.findMany(query)
+            : await this.db.courseTariff.findMany({ ...query, where });
       for (const record of records)
-        button(k, record.title, cb("pick", record.id)).row();
-      if (p.page > 0) button(k, "⬅️", cb("page", String(p.page - 1)));
-      if (p.page < p.pages - 1) button(k, "➡️", cb("page", String(p.page + 1)));
+        button(
+          k,
+          content<{ language: typeof admin.language; title: string }>(
+            record.translations,
+            admin.language,
+            "title",
+          ) || ("title" in record ? record.title : record.code),
+          cb("pick", record.id),
+        ).row();
+      if (pag.page > 0) button(k, "⬅️", cb("page", String(pag.page - 1)));
+      if (pag.page < pag.pages - 1)
+        button(k, "➡️", cb("page", String(pag.page + 1)));
       k.row();
     }
-    if (field.nullable)
-      button(k, "Любое / пропустить", cb("pick", "ANY")).row();
-    if (field.type === "cover" || field.type === "demo")
-      button(k, "Пропустить", cb("pick", "-")).row();
-    button(k, "❌ Отмена", cb("cancel", "ok"));
+    if (field.nullable) button(k, tr("common.skip"), cb("pick", "ANY")).row();
+    if (
+      field.type === "cover" ||
+      field.type === "demo" ||
+      field.type === "media"
+    )
+      button(k, tr("common.skip"), cb("pick", "-")).row();
+    button(k, tr("common.cancel"), cb("cancel", "ok"));
     const current = p.data[field.key];
     await display(
       ctx,
-      "Шаг " +
+      tr("common.step") +
+        " " +
         (state.step + 1) +
         "/" +
         p.keys.length +
         "\n" +
-        field.label +
+        tr(field.label) +
         (current != null
-          ? "\nТекущее значение: " + String(current).slice(0, 1200)
+          ? "\n" + tr("common.current") + ": " + String(current).slice(0, 1200)
           : "") +
-        "\n\n/cancel — отменить",
+        "\n\n" +
+        tr("common.cancelHelp"),
       k,
     );
   }
@@ -160,7 +190,11 @@ export class WizardView {
     const field = fieldFor(state);
     if (!field) return false;
     let value: unknown = ctx.message?.text;
-    if (field.type === "cover" || field.type === "demo") {
+    if (
+      field.type === "cover" ||
+      field.type === "demo" ||
+      field.type === "media"
+    ) {
       const msg = ctx.message!;
       const url = msg.text?.trim();
       let fileId: string | null = null;
@@ -170,7 +204,11 @@ export class WizardView {
           fileId = msg.document.file_id;
       } else {
         if (msg.video) fileId = msg.video.file_id;
-        else if (msg.document?.mime_type?.startsWith("video/"))
+        else if (
+          msg.document &&
+          (msg.document.mime_type?.startsWith("video/") ||
+            (field.type === "media" && payload(state).data.type !== "VIDEO"))
+        )
           fileId = msg.document.file_id;
       }
       if (url && url !== "-") {
@@ -178,33 +216,37 @@ export class WizardView {
           const parsed = new URL(url);
           if (!["https:", "http:"].includes(parsed.protocol)) throw new Error();
         } catch {
-          throw new AppError("Пришлите корректный HTTP(S) URL или файл");
+          throw new AppError(t("media.url", admin.language));
         }
       }
       if (!fileId && !url)
-        throw new AppError(
-          "Неподдерживаемый файл. Пришлите фото/видео или документ соответствующего типа.",
-        );
+        throw new AppError(t("media.invalid", admin.language));
       value =
-        field.type === "cover"
+        field.type === "media"
           ? {
-              imageFileId: fileId,
-              imageFileType: fileId
-                ? msg.document
-                  ? "document"
-                  : "photo"
-                : null,
-              imageUrl: url && url !== "-" ? url : null,
+              fileId,
+              fileType: fileId ? (msg.document ? "document" : "video") : null,
+              url: url && url !== "-" ? url : null,
             }
-          : {
-              demoFileId: fileId,
-              demoFileType: fileId
-                ? msg.document
-                  ? "document"
-                  : "video"
-                : null,
-              demoVideoUrl: url && url !== "-" ? url : null,
-            };
+          : field.type === "cover"
+            ? {
+                imageFileId: fileId,
+                imageFileType: fileId
+                  ? msg.document
+                    ? "document"
+                    : "photo"
+                  : null,
+                imageUrl: url && url !== "-" ? url : null,
+              }
+            : {
+                demoFileId: fileId,
+                demoFileType: fileId
+                  ? msg.document
+                    ? "document"
+                    : "video"
+                  : null,
+                demoVideoUrl: url && url !== "-" ? url : null,
+              };
     }
     const next = await this.flows.input(
       admin.id,
@@ -219,21 +261,23 @@ export class WizardView {
   async pick(ctx: Context, admin: AdminUser, nonce: string, value: string) {
     const state = await this.flows.state(admin.id, nonce),
       field = fieldFor(state);
-    if (!field) throw new AppError("Кнопка устарела");
+    if (!field) throw new AppError(t("error.stale"));
     if (["text", "money", "number"].includes(field.type) && !field.nullable)
-      throw new AppError("Введите значение сообщением");
+      throw new AppError(t("error.messageValue"));
     const media =
-      field.type === "cover"
-        ? { imageFileId: null, imageFileType: null, imageUrl: null }
-        : { demoFileId: null, demoFileType: null, demoVideoUrl: null };
-    if (["cover", "demo"].includes(field.type) && value !== "-")
-      throw new AppError("Пришлите файл или URL");
+      field.type === "media"
+        ? { fileId: null, fileType: null, url: null }
+        : field.type === "cover"
+          ? { imageFileId: null, imageFileType: null, imageUrl: null }
+          : { demoFileId: null, demoFileType: null, demoVideoUrl: null };
+    if (["cover", "demo", "media"].includes(field.type) && value !== "-")
+      throw new AppError(t("error.file"));
     await this.show(
       ctx,
       await this.flows.input(
         admin.id,
         nonce,
-        ["cover", "demo"].includes(field.type) ? media : value,
+        ["cover", "demo", "media"].includes(field.type) ? media : value,
       ),
     );
   }

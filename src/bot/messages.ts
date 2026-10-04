@@ -31,6 +31,21 @@ export async function display(
         await ctx.reply(body, options);
       else throw error;
     }
+  } else if (ctx.callbackQuery?.message) {
+    try {
+      await ctx.editMessageCaption({
+        caption: body.slice(0, 1000),
+        ...options,
+      });
+    } catch (error) {
+      if (
+        error instanceof Error &&
+        error.message.includes("message is not modified")
+      )
+        return;
+      throw error;
+    }
+    if (body.length > 1000) await ctx.reply(body.slice(1000));
   } else await ctx.reply(body, options);
   for (const chunk of chunks.slice(1)) await ctx.reply(chunk);
 }

@@ -1,3 +1,4 @@
+import { t } from "../i18n";
 import type { Prisma, PrismaClient, Role } from "@prisma/client";
 import { AppError } from "../lib/errors";
 import { atomic } from "./transaction";
@@ -12,14 +13,27 @@ export type Section =
   | "requests"
   | "staff"
   | "requisites"
-  | "settings";
+  | "settings"
+  | "tariffs"
+  | "funnel"
+  | "bonuses"
+  | "languages"
+  | "status";
 export function permitted(role: Role, section: Section, write = false) {
+  if (section === "languages") return true;
   if (role === "OWNER") return true;
   if (["staff", "requisites", "settings"].includes(section)) return false;
   if (role === "ADMIN") return true;
   return write
     ? ["clients", "requests"].includes(section)
-    : ["stats", "clients", "courses", "payments", "requests"].includes(section);
+    : [
+        "stats",
+        "clients",
+        "courses",
+        "tariffs",
+        "payments",
+        "requests",
+      ].includes(section);
 }
 export async function requireAdmin(
   db: PrismaClient | Prisma.TransactionClient,
@@ -29,7 +43,7 @@ export async function requireAdmin(
 ) {
   const admin = await db.adminUser.findUnique({ where: { id } });
   if (!admin?.active || !permitted(admin.role, section, write))
-    throw new AppError("Команда недоступна.", 403);
+    throw new AppError(t("error.denied"), 403);
   return admin;
 }
 export async function bootstrapOwner(db: PrismaClient, telegramId?: string) {

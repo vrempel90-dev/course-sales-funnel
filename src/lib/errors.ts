@@ -27,7 +27,9 @@ export async function recordError(
         stack:
           error instanceof Error && error.stack ? safeError(error.stack) : null,
         context: JSON.parse(
-          safeError(JSON.stringify(context)),
+          JSON.stringify(context, (_key, value) =>
+            typeof value === "string" ? safeError(value) : value,
+          ),
         ) as Prisma.InputJsonValue,
       },
     })

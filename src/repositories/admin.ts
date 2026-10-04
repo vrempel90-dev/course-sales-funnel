@@ -1,11 +1,22 @@
-import { Prisma, PrismaClient } from "@prisma/client";
+import { t, content } from "../i18n";
+import { Prisma, PrismaClient, Language } from "@prisma/client";
 import { AppError } from "../lib/errors";
 import { Section } from "../services/auth";
 import { pagination } from "../utils/pagination";
 export const filters: Partial<Record<Section, string[]>> = {
-  clients: ["new", "waiting", "paid", "attention", "all", "search"],
+  clients: ["new", "waiting", "paid", "attention", "RU", "KZ", "all", "search"],
   courses: ["ACTIVE", "HIDDEN", "ARCHIVED", "all"],
   categories: ["all"],
+  tariffs: ["active", "disabled", "all"],
+  bonuses: ["all"],
+  funnel: [
+    "WELCOME",
+    "PROFESSIONAL",
+    "FAMILY",
+    "BEAUTY",
+    "SALE",
+    "REMINDERS",
+  ].flatMap((s) => [s + "_RU", s + "_KZ"]),
   rules: ["all"],
   payments: ["PENDING_REVIEW", "PAID", "REJECTED", "all"],
   access: ["FAILED", "PENDING", "GRANTED", "all"],
@@ -37,9 +48,11 @@ export class AdminRepository {
     requested: number,
     userId?: string,
     search?: string,
+    language: Language = "RU",
   ) {
+    const tr = (key: string) => t(key, language);
     if (!filters[section]?.includes(filter))
-      throw new AppError("Неизвестный фильтр");
+      throw new AppError(t("error.unknownFilter"));
     const query = async <T>(
       count: Promise<number>,
       fetch: (p: { skip: number; take: number }) => Promise<T[]>,
@@ -55,6 +68,9 @@ export class AdminRepository {
     switch (section) {
       case "clients": {
         const where: Prisma.UserWhereInput = {
+          ...(["RU", "KZ"].includes(filter)
+            ? { language: filter as Language }
+            : {}),
           ...(filter === "new" ? { currentFunnelStage: "NEW" } : {}),
           ...(filter === "waiting"
             ? {
@@ -84,8 +100,7 @@ export class AdminRepository {
             : {}),
         };
         if (filter === "search") {
-          if (!search?.trim())
-            throw new AppError("Поиск устарел. Введите запрос заново.");
+          if (!search?.trim()) throw new AppError(t("error.searchRestart"));
           const needle = search.trim().replace(/^@/, "");
           where.OR = [
             ...["firstName", "lastName", "telegramUsername", "phone"].map(
@@ -103,7 +118,7 @@ export class AdminRepository {
               where,
               orderBy,
               ...p,
-              include: { selectedCourse: true },
+              include: { selectedCourse: { include: { translations: true } } },
             }),
           (v) => ({
             id: v.id,
@@ -112,7 +127,10 @@ export class AdminRepository {
               " · " +
               v.currentFunnelStage +
               " · " +
-              (v.selectedCourse?.title ?? "Без курса") +
+              (v.selectedCourse
+                ? content(v.selectedCourse.translations, language, "title") ||
+                  v.selectedCourse.title
+                : "—") +
               " · " +
               date(v.createdAt),
           }),
@@ -131,18 +149,14 @@ export class AdminRepository {
               where,
               ...p,
               orderBy: [{ sortOrder: "asc" }, { id: "asc" }],
+              include: { translations: true },
             }),
           (v) => ({
             id: v.id,
             label:
-              v.title +
+              (content(v.translations, language, "title") || v.title) +
               " · " +
-              v.status +
-              " · " +
-              v.priceKZT +
-              " ₸ / " +
-              v.priceRUB +
-              " ₽",
+              tr("value." + v.status),
           }),
         );
       }
@@ -153,10 +167,14 @@ export class AdminRepository {
             this.db.courseCategory.findMany({
               ...p,
               orderBy: [{ sortOrder: "asc" }, { id: "asc" }],
+              include: { translations: true },
             }),
           (v) => ({
             id: v.id,
-            label: v.title + " · " + (v.active ? "Включено" : "Выключено"),
+            label:
+              (content(v.translations, language, "title") || v.title) +
+              " · " +
+              tr(v.active ? "common.enabled" : "common.disabled"),
           }),
         );
       case "rules":
@@ -165,19 +183,84 @@ export class AdminRepository {
           (p) =>
             this.db.recommendationRule.findMany({
               ...p,
-              include: { course: true },
+              include: { course: { include: { translations: true } } },
               orderBy: [{ priority: "desc" }, { id: "asc" }],
             }),
           (v) => ({
             id: v.id,
             label:
-              v.course.title +
-              " · приоритет " +
+              (content(v.course.translations, language, "title") ||
+                v.course.title) +
+              " · " +
+              tr("field.priority") +
+              " " +
               v.priority +
               " · " +
-              (v.active ? "Вкл" : "Выкл"),
+              tr(v.active ? "common.enabled" : "common.disabled"),
           }),
         );
+      case "tariffs": {
+        const where: Prisma.CourseTariffWhereInput = {
+          ...(filter !== "all" ? { active: filter === "active" } : {}),
+          ...(userId ? { courseId: userId } : {}),
+        };
+        return query(
+          this.db.courseTariff.count({ where }),
+          (p) =>
+            this.db.courseTariff.findMany({
+              where,
+              ...p,
+              orderBy: [{ sortOrder: "asc" }, { id: "asc" }],
+              include: { translations: true, course: true },
+            }),
+          (v) => ({
+            id: v.id,
+            label:
+              (content(v.translations, language, "title") || v.code) +
+              " · " +
+              v.priceKZT +
+              " ₸ / " +
+              v.priceRUB +
+              " ₽ · " +
+              v.course.title,
+          }),
+        );
+      }
+      case "bonuses":
+        return query(
+          this.db.bonusMaterial.count(),
+          (p) =>
+            this.db.bonusMaterial.findMany({
+              ...p,
+              orderBy,
+              include: { translations: true },
+            }),
+          (v) => ({
+            id: v.id,
+            label: content(v.translations, language, "title") || v.code,
+          }),
+        );
+      case "funnel": {
+        const [stage, lang] = filter.split("_");
+        const where = { stage, language: lang as Language };
+        return query(
+          this.db.funnelContent.count({ where }),
+          (p) =>
+            this.db.funnelContent.findMany({
+              where,
+              ...p,
+              orderBy: { key: "asc" },
+            }),
+          (v) => ({
+            id: v.id,
+            label:
+              v.key +
+              " · " +
+              v.language +
+              (v.text ? "" : " · " + tr("common.warningKZ")),
+          }),
+        );
+      }
       case "payments": {
         const where: Prisma.PaymentWhereInput = {
           ...(filter === "all"
@@ -192,14 +275,18 @@ export class AdminRepository {
               where,
               ...p,
               orderBy,
-              include: { user: true, course: true },
+              include: {
+                user: true,
+                course: { include: { translations: true } },
+              },
             }),
           (v) => ({
             id: v.id,
             label:
               clientName(v.user) +
               " · " +
-              v.course.title +
+              (content(v.course.translations, language, "title") ||
+                v.course.title) +
               " · " +
               v.amount +
               " " +
@@ -230,14 +317,18 @@ export class AdminRepository {
               where,
               ...p,
               orderBy,
-              include: { user: true, course: true },
+              include: {
+                user: true,
+                course: { include: { translations: true } },
+              },
             }),
           (v) => ({
             id: v.id,
             label:
               clientName(v.user) +
               " · " +
-              v.course.title +
+              (content(v.course.translations, language, "title") ||
+                v.course.title) +
               " · " +
               v.accessStatus,
           }),
@@ -278,15 +369,16 @@ export class AdminRepository {
               " · " +
               v.role +
               " · " +
-              (v.active ? "Активен" : "Отключён"),
+              tr(v.active ? "common.enabled" : "common.disabled"),
           }),
         );
       }
       default:
-        throw new AppError("Список недоступен");
+        throw new AppError(t("error.listUnavailable"));
     }
   }
-  async stats() {
+  async stats(language: Language = "RU") {
+    const tr = (key: string) => t(key, language);
     const shifted = new Date(Date.now() + 5 * 3600000);
     const today = new Date(
       Date.UTC(
@@ -333,37 +425,99 @@ export class AdminRepository {
       rows: { status?: string; accessStatus?: string; _count: number }[],
       key: string,
     ) => rows.find((x) => (x.status ?? x.accessStatus) === key)?._count ?? 0;
+    const [goals, languages, beauty, payDay, reviewDay, paidDay, reqDay] =
+      await Promise.all([
+        this.db.user.groupBy({ by: ["primaryGoal"], _count: true }),
+        this.db.user.groupBy({ by: ["language"], _count: true }),
+        this.db.user.groupBy({ by: ["beautyProfession"], _count: true }),
+        this.db.payment.count({ where: { createdAt: { gte: today } } }),
+        this.db.payment.count({
+          where: { createdAt: { gte: today }, status: "PENDING_REVIEW" },
+        }),
+        this.db.payment.count({
+          where: { reviewedAt: { gte: today }, status: "PAID" },
+        }),
+        this.db.managerRequest.count({
+          where: { createdAt: { gte: today }, status: "NEW" },
+        }),
+      ]);
+    const segments = goals
+      .filter((r) => r.primaryGoal)
+      .map((r) => tr("value." + r.primaryGoal) + ": " + r._count)
+      .concat(
+        languages.map((r) => r.language + ": " + r._count),
+        beauty
+          .filter((r) => r.beautyProfession)
+          .map((r) => tr("value." + r.beautyProfession) + ": " + r._count),
+      )
+      .join("\n");
     return (
-      "📊 Статистика\nКлиенты: " +
+      tr("stats.title") +
+      "\n" +
+      tr("stats.clients") +
+      ": " +
       total +
-      "\nСегодня: " +
+      "\n" +
+      tr("stats.today") +
+      ": " +
       day +
-      "\n7 дней: " +
+      "\n" +
+      tr("stats.week") +
+      ": " +
       week +
-      "\nЭтот месяц: " +
+      "\n" +
+      tr("stats.month") +
+      ": " +
       monthly +
-      "\n\nКурсы ACTIVE / HIDDEN / ARCHIVED: " +
+      "\n\n" +
+      tr("courses.title") +
+      " ACTIVE / HIDDEN / ARCHIVED: " +
       ["ACTIVE", "HIDDEN", "ARCHIVED"]
         .map((x) => count(courses, x))
         .join(" / ") +
-      "\nОплаты PENDING_REVIEW / PAID / REJECTED: " +
+      "\n" +
+      tr("payments.title") +
+      " PENDING_REVIEW / PAID / REJECTED: " +
       ["PENDING_REVIEW", "PAID", "REJECTED"]
         .map((x) => count(payments, x))
         .join(" / ") +
-      "\nАктивные зачисления: " +
+      "\n" +
+      tr("stats.enrollments") +
+      ": " +
       enrollments +
-      "\nОжидают доступа: " +
+      "\n" +
+      tr("stats.waiting") +
+      ": " +
       (count(access, "PENDING") + count(access, "CREATING")) +
-      "\nОшибки доступа: " +
+      "\n" +
+      tr("stats.failed") +
+      ": " +
       (count(access, "FAILED") + count(access, "UNCERTAIN")) +
-      "\nЗапросы NEW / IN_PROGRESS: " +
+      "\n" +
+      tr("requests.title") +
+      " NEW / IN_PROGRESS: " +
       ["NEW", "IN_PROGRESS"].map((x) => count(requests, x)).join(" / ") +
-      "\n\nВыручка KZT: " +
+      "\n" +
+      tr("stats.revenueKZT") +
+      ": " +
       (revenue.find((x) => x.currency === "KZT")?._sum.amount?.toString() ??
         "0") +
-      "\nВыручка RUB: " +
+      "\n" +
+      tr("stats.revenueRUB") +
+      ": " +
       (revenue.find((x) => x.currency === "RUB")?._sum.amount?.toString() ??
-        "0")
+        "0") +
+      "\n\n" +
+      [
+        ["stats.paymentsToday", payDay],
+        ["stats.reviewToday", reviewDay],
+        ["stats.paidToday", paidDay],
+        ["stats.requestsToday", reqDay],
+      ]
+        .map(([k, v]) => tr(String(k)) + ": " + v)
+        .join("\n") +
+      "\n\n" +
+      segments
     );
   }
 }

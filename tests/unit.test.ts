@@ -1,16 +1,56 @@
 import { describe, it, expect } from "vitest";
+import { t, content, translateMessage } from "../src/i18n";
+import { kz } from "../src/i18n/kz";
 import { permitted } from "../src/services/auth";
 import { runtimeConfig } from "../src/lib/config";
 import { safeError } from "../src/lib/errors";
 import { pageIndex, pagination } from "../src/utils/pagination";
 import { home } from "../src/bot/keyboards/admin";
 import {
+  tariffSchema,
   courseSchema,
   requisitesSchema,
   defaultSettings,
   configSchema,
 } from "../src/services/schemas";
 describe("roles and validation", () => {
+  it("localizes RU/KZ and falls back for missing UI keys and marketing fields", () => {
+    expect(t("admin.title", "RU")).toBe("⚙️ Админ-панель");
+    expect(t("admin.title", "KZ")).toBe("⚙️ Әкімші панелі");
+    const dictionary: Partial<typeof kz> = kz;
+    const original = dictionary["common.yes"];
+    try {
+      dictionary["common.yes"] = "";
+      expect(t("common.yes", "KZ")).toBe("Да");
+    } finally {
+      dictionary["common.yes"] = original;
+    }
+    expect(
+      content(
+        [
+          { language: "RU", title: "Original", description: "RU details" },
+          { language: "KZ", title: "Атау", description: null },
+        ],
+        "KZ",
+        "description",
+      ),
+    ).toBe("RU details");
+    expect(translateMessage("Введите целое число", "KZ")).toBe(
+      "Бүтін сан енгізіңіз",
+    );
+  });
+  it("accepts only HTTP(S) media and trial URLs", () => {
+    expect(
+      courseSchema.shape.imageUrl.safeParse("javascript:alert(1)").success,
+    ).toBe(false);
+    expect(
+      configSchema.shape.trialBookingUrl.safeParse("ftp://example.com").success,
+    ).toBe(false);
+    expect(
+      courseSchema.shape.demoVideoUrl.safeParse("https://example.com/video")
+        .success,
+    ).toBe(true);
+  });
   it("OWNER has every section", () => {
     for (const s of [
       "staff",
@@ -98,7 +138,7 @@ describe("roles and validation", () => {
     ).toThrow();
   });
   it("rejects negative prices and forged channel IDs", () => {
-    expect(courseSchema.shape.priceKZT.safeParse("-1").success).toBe(false);
+    expect(tariffSchema.shape.priceKZT.safeParse("-1").success).toBe(false);
     expect(courseSchema.shape.telegramChannelId.safeParse("123").success).toBe(
       false,
     );

@@ -1,3 +1,4 @@
+import { t } from "../i18n";
 import { PrismaClient } from "@prisma/client";
 import { TelegramGateway } from "../bot/gateway";
 import { AppError, safeError, recordError } from "../lib/errors";
@@ -20,7 +21,7 @@ export class AccessService {
         enrollment.status !== "ACTIVE" ||
         enrollment.payment.status !== "PAID"
       )
-        throw new AppError("Нет активного доступа с подтверждённой оплатой");
+        throw new AppError(t("error.noAccess"));
       if (
         enrollment.accessStatus === "GRANTED" &&
         enrollment.inviteExpiresAt &&
@@ -32,18 +33,14 @@ export class AccessService {
         enrollment.accessStartedAt &&
         enrollment.accessStartedAt.getTime() > Date.now() - 600000
       )
-        throw new AppError(
-          "Выдача доступа уже выполняется. Дождитесь результата.",
-        );
+        throw new AppError(t("error.accessRunning"));
       if (
         (enrollment.accessStatus === "CREATING" ||
           enrollment.accessStatus === "UNCERTAIN" ||
           enrollment.accessError?.startsWith("UNCERTAIN:")) &&
         !reconciled
       )
-        throw new AppError(
-          "Проверьте и отзовите возможную ссылку в Telegram, затем подтвердите сверку.",
-        );
+        throw new AppError(t("error.accessReconcile"));
       await tx.enrollment.update({
         where: { id: enrollmentId },
         data: {
@@ -52,7 +49,7 @@ export class AccessService {
           accessError: null,
         },
       });
-      await audit(tx, adminId, "ACCESS_RETRY", "Enrollment", enrollmentId, {
+      await audit(tx, adminId, "ACCESS_RETRIED", "Enrollment", enrollmentId, {
         reconciled,
       });
       return enrollment;
@@ -67,7 +64,7 @@ export class AccessService {
     );
     try {
       if (!claimed.course.telegramChannelId)
-        throw new AppError("Для курса не задан Telegram Channel ID");
+        throw new AppError(t("error.noChannel"));
       if (claimed.telegramInviteLink)
         await this.telegram.revokeInvite(
           claimed.course.telegramChannelId,
@@ -94,7 +91,8 @@ export class AccessService {
           data: {
             userId: claimed.userId,
             courseId: claimed.courseId,
-            type: "access_granted",
+            tariffId: claimed.tariffId,
+            type: "ACCESS_GRANTED",
             metadata: { enrollmentId },
           },
         });
@@ -118,6 +116,15 @@ export class AccessService {
         await audit(tx, adminId, "ACCESS_FAILED", "Enrollment", enrollmentId, {
           message,
           uncertain,
+        });
+        await tx.funnelEvent.create({
+          data: {
+            userId: claimed.userId,
+            courseId: claimed.courseId,
+            tariffId: claimed.tariffId,
+            type: "ACCESS_FAILED",
+            metadata: { enrollmentId, uncertain },
+          },
         });
         return result;
       });

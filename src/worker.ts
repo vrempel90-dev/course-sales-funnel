@@ -5,6 +5,7 @@ import type { Update } from "grammy/types";
 import { db } from "./database/client";
 import { runtimeConfig } from "./lib/config";
 import { safeError, recordError } from "./lib/errors";
+import { configureCommands } from "./bot/commands/configure";
 import { createBot } from "./bot";
 import { bootstrapOwner } from "./services/auth";
 import { healthServer } from "./health";
@@ -85,10 +86,7 @@ async function main() {
       try {
         if (!configured) {
           await bot.api.deleteWebhook({ drop_pending_updates: false });
-          await bot.api.setMyCommands([
-            { command: "admin", description: "Админ-панель" },
-            { command: "cancel", description: "Отменить действие" },
-          ]);
+          await configureCommands(bot.api);
           configured = true;
         }
         const offset = Number(

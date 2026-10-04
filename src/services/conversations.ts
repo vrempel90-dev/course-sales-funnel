@@ -1,155 +1,21 @@
-import { randomBytes } from "node:crypto";
+import { t } from "../i18n";
+import { randomBytes, createHash } from "node:crypto";
 import { AdminConversationState, Prisma, PrismaClient } from "@prisma/client";
 import { AppError } from "../lib/errors";
 import { AdminService, Entity, entitySection } from "./admin";
 import { PaymentService } from "./payments";
 import { requireAdmin } from "./auth";
 import { atomic } from "./transaction";
-export type Field = {
-  key: string;
-  label: string;
-  type:
-    | "text"
-    | "number"
-    | "money"
-    | "bool"
-    | "choice"
-    | "category"
-    | "course"
-    | "cover"
-    | "demo";
-  options?: string[];
-  nullable?: boolean;
-  max?: number;
-};
-const f = (
-  key: string,
-  label: string,
-  type: Field["type"] = "text",
-  extra: Partial<Field> = {},
-): Field => ({ key, label, type, ...extra });
-export const fields: Record<Entity | "reject" | "search", Field[]> = {
-  category: [
-    f("title", "Название направления"),
-    f("description", "Описание (- — пропустить)", "text", {
-      nullable: true,
-      max: 1000,
-    }),
-    f("active", "Активность", "bool"),
-    f("sortOrder", "Порядок сортировки", "number"),
-  ],
-  course: [
-    f("title", "Название курса"),
-    f("shortDescription", "Краткое описание", "text", { max: 300 }),
-    f("fullDescription", "Полное описание", "text", { max: 1200 }),
-    f("categoryId", "Направление", "category"),
-    f("program", "Программа", "text", { max: 1200 }),
-    f("duration", "Продолжительность"),
-    f("priceKZT", "Цена KZT", "money"),
-    f("priceRUB", "Цена RUB", "money"),
-    f(
-      "cover",
-      "Обложка: фото, документ изображения или URL (- — пропустить)",
-      "cover",
-    ),
-    f(
-      "demo",
-      "Демоурок: видео, документ видео или URL (- — пропустить)",
-      "demo",
-    ),
-    f(
-      "telegramChannelId",
-      "Channel ID (-100…) или @username (- — пропустить)",
-      "text",
-      { nullable: true },
-    ),
-    f("status", "Статус", "choice", {
-      options: ["DRAFT", "ACTIVE", "HIDDEN", "ARCHIVED"],
-    }),
-    f("sortOrder", "Порядок сортировки", "number"),
-  ],
-  rule: [
-    f("experienceLevel", "Опыт или ANY", "choice", {
-      nullable: true,
-      options: ["BEGINNER", "PRACTICING", "PROFESSIONAL", "UPSKILLING"],
-    }),
-    f("categoryId", "Направление или ANY", "category", { nullable: true }),
-    f("learningGoal", "Цель или ANY", "choice", {
-      nullable: true,
-      options: ["NEW_PROFESSION", "NEW_SERVICE", "PERSONAL", "UPSKILLING"],
-    }),
-    f("courseId", "Курс", "course"),
-    f("priority", "Приоритет", "number"),
-    f("active", "Активность", "bool"),
-  ],
-  admin: [
-    f("telegramId", "Telegram ID нового сотрудника"),
-    f("name", "Имя"),
-    f("role", "Роль", "choice", { options: ["ADMIN", "MANAGER"] }),
-  ],
-  client: [
-    f("firstName", "Имя"),
-    f("lastName", "Фамилия (- — очистить)", "text", { nullable: true }),
-    f("phone", "Телефон (- — очистить)", "text", { nullable: true, max: 40 }),
-    f("experienceLevel", "Опыт", "choice", {
-      nullable: true,
-      options: ["BEGINNER", "PRACTICING", "PROFESSIONAL", "UPSKILLING"],
-    }),
-    f("categoryId", "Направление", "category", { nullable: true }),
-    f("learningGoal", "Цель", "choice", {
-      nullable: true,
-      options: ["NEW_PROFESSION", "NEW_SERVICE", "PERSONAL", "UPSKILLING"],
-    }),
-    f("selectedCourseId", "Выбранный курс", "course", { nullable: true }),
-    f("currentFunnelStage", "Этап", "choice", {
-      options: [
-        "NEW",
-        "TELEGRAM_STARTED",
-        "QUESTIONNAIRE_STARTED",
-        "QUESTIONNAIRE_COMPLETED",
-        "COURSE_RECOMMENDED",
-        "DEMO_VIEWED",
-        "COURSE_SELECTED",
-        "PAYMENT_STARTED",
-        "WAITING_PAYMENT",
-        "PAYMENT_REVIEW",
-        "PAID",
-        "ACCESS_GRANTED",
-        "MANAGER_REQUESTED",
-      ],
-    }),
-  ],
-  settings: [
-    f("projectName", "Название проекта"),
-    f("supportUsername", "Support username (- — очистить)"),
-    f("adminNotifications", "Уведомления администраторам", "bool"),
-    f("remindersEnabled", "Напоминания", "bool"),
-    f("demoDelayHours", "Задержка демоурока, часы", "number"),
-    f("paymentDelayHours", "Задержка оплаты, часы", "number"),
-    f("inviteLifetimeHours", "Срок инвайта, часы (1–168)", "number"),
-  ],
-  requisites: [
-    f("title", "Название способа оплаты"),
-    f("instruction", "Инструкция", "text", { max: 1200 }),
-    f("requisites", "Реквизиты", "text", { max: 1200 }),
-    f("enabled", "Включить способ оплаты", "bool"),
-  ],
-  reject: [f("reason", "Введите причину отклонения", "text", { max: 1000 })],
-  search: [
-    f(
-      "query",
-      "Введите имя, username, Telegram ID или номер телефона.",
-      "text",
-      { max: 120 },
-    ),
-  ],
-};
+import { configSchema, defaultSettings } from "./schemas";
+import { fields } from "./admin-fields";
+export { fields } from "./admin-fields";
 export type FlowData = {
   data: Record<string, unknown>;
   id?: string;
   keys: string[];
   previewEdit?: boolean;
   lastUpdateId?: number;
+  revision?: string;
 };
 export function payload(state: AdminConversationState): FlowData {
   return state.payload as unknown as FlowData;
@@ -165,28 +31,114 @@ const json = (value: unknown) =>
     JSON.stringify(value, (_, v) => (typeof v === "bigint" ? v.toString() : v)),
   ) as Prisma.InputJsonValue;
 const nonce = () => randomBytes(6).toString("hex");
+async function readFormData(
+  db: PrismaClient | Prisma.TransactionClient,
+  kind: keyof typeof fields,
+  id: string,
+) {
+  let value: unknown;
+  switch (kind) {
+    case "course":
+      value = await db.course.findUniqueOrThrow({ where: { id } });
+      break;
+    case "tariff": {
+      const tariff = await db.courseTariff.findUniqueOrThrow({
+        where: { id },
+        include: { translations: true },
+      });
+      const ru = tariff.translations.find((t) => t.language === "RU");
+      const kz = tariff.translations.find((t) => t.language === "KZ");
+      value = {
+        ...tariff,
+        title: ru?.title ?? tariff.code,
+        description: ru?.description ?? null,
+        titleKZ: kz?.title || null,
+      };
+      break;
+    }
+    case "ct":
+      value = await db.courseTranslation.findUniqueOrThrow({ where: { id } });
+      break;
+    case "kt":
+      value = await db.courseCategoryTranslation.findUniqueOrThrow({
+        where: { id },
+      });
+      break;
+    case "tt":
+      value = await db.courseTariffTranslation.findUniqueOrThrow({
+        where: { id },
+      });
+      break;
+    case "bt":
+      value = await db.bonusMaterialTranslation.findUniqueOrThrow({
+        where: { id },
+      });
+      break;
+    case "funnel":
+      value = await db.funnelContent.findUniqueOrThrow({ where: { id } });
+      break;
+    case "bonus":
+      value = await db.bonusMaterial.findUniqueOrThrow({ where: { id } });
+      break;
+    case "category":
+      value = await db.courseCategory.findUniqueOrThrow({
+        where: { id },
+      });
+      break;
+    case "rule":
+      value = await db.recommendationRule.findUniqueOrThrow({
+        where: { id },
+      });
+      break;
+    case "client":
+      value = await db.user.findUniqueOrThrow({ where: { id } });
+      break;
+    case "settings":
+      value = configSchema.parse(
+        (await db.setting.findUnique({ where: { key: "admin.settings" } }))
+          ?.value ?? defaultSettings,
+      );
+      break;
+    case "requisites":
+      value = await db.paymentMethodSetting.findUniqueOrThrow({
+        where: { country: id as "KZ" | "RU" },
+      });
+      break;
+    case "reject":
+      await db.payment.findUniqueOrThrow({ where: { id } });
+      value = {};
+      break;
+    default:
+      throw new AppError(t("error.invalidWizard"));
+  }
+  return value;
+}
+const revision = (value: unknown) =>
+  createHash("sha256")
+    .update(JSON.stringify(json(value)))
+    .digest("hex");
 export class Conversations {
   constructor(public db: PrismaClient) {}
   async state(adminId: string, expected?: string) {
     const state = await this.db.adminConversationState.findUnique({
       where: { adminId },
     });
-    if (!state) throw new AppError("Нет активного мастера");
+    if (!state) throw new AppError(t("error.noWizard"));
     if (state.expiresAt < new Date()) {
       await this.db.adminConversationState.deleteMany({
         where: { adminId, nonce: state.nonce },
       });
-      throw new AppError("Мастер истёк. Откройте его заново.");
+      throw new AppError(t("error.wizardExpired"));
     }
     if (expected && state.nonce !== expected)
-      throw new AppError("Кнопка устарела. Используйте последнее сообщение.");
+      throw new AppError(t("error.staleButton"));
     const section =
       state.flowType === "search"
         ? "clients"
         : state.flowType === "reject"
           ? "payments"
           : entitySection[state.flowType as Entity];
-    if (!section) throw new AppError("Неизвестный мастер");
+    if (!section) throw new AppError(t("error.unknownWizard"));
     await requireAdmin(this.db, adminId, section, state.flowType !== "search");
     return state;
   }
@@ -195,6 +147,7 @@ export class Conversations {
     kind: keyof typeof fields,
     id?: string,
     key?: string,
+    initial: Record<string, unknown> = {},
   ) {
     const section =
       kind === "search"
@@ -205,61 +158,43 @@ export class Conversations {
     await requireAdmin(this.db, adminId, section, kind !== "search");
     let data: Record<string, unknown> = {
       sortOrder: 0,
+      active: true,
+      language: "RU",
+      ...initial,
       imageFileId: null,
       imageUrl: null,
       demoFileId: null,
       demoVideoUrl: null,
     };
     if (id) {
-      let value: unknown;
-      switch (kind) {
-        case "course":
-          value = await this.db.course.findUniqueOrThrow({ where: { id } });
-          break;
-        case "category":
-          value = await this.db.courseCategory.findUniqueOrThrow({
-            where: { id },
-          });
-          break;
-        case "rule":
-          value = await this.db.recommendationRule.findUniqueOrThrow({
-            where: { id },
-          });
-          break;
-        case "client":
-          value = await this.db.user.findUniqueOrThrow({ where: { id } });
-          break;
-        case "settings":
-          value = await new AdminService(this.db).settings();
-          break;
-        case "requisites":
-          value = await this.db.paymentMethodSetting.findUniqueOrThrow({
-            where: { country: id as "KZ" | "RU" },
-          });
-          break;
-        case "reject":
-          await this.db.payment.findUniqueOrThrow({ where: { id } });
-          value = {};
-          break;
-        default:
-          throw new AppError("Неверный мастер");
-      }
-      data = json(value) as Record<string, unknown>;
+      data = json(await readFormData(this.db, kind, id)) as Record<
+        string,
+        unknown
+      >;
     }
     const keys = key
       ? [key]
       : fields[kind]
-          .filter((x) => kind !== "course" || x.key !== "sortOrder")
+          .filter(
+            (x) =>
+              (kind !== "course" || !["sortOrder", "active"].includes(x.key)) &&
+              !(kind === "tariff" && initial.courseId && x.key === "courseId"),
+          )
           .map((x) => x.key);
     if (keys.some((k) => !fields[kind].some((f) => f.key === k)))
-      throw new AppError("Неверное поле");
+      throw new AppError(t("error.invalidField"));
     return this.db.adminConversationState.upsert({
       where: { adminId },
       update: {
         flowType: kind,
         step: 0,
         nonce: nonce(),
-        payload: json({ data, id, keys }),
+        payload: json({
+          data,
+          id,
+          keys,
+          revision: id && kind !== "reject" ? revision(data) : undefined,
+        }),
         expiresAt: new Date(Date.now() + 3600000),
       },
       create: {
@@ -267,7 +202,12 @@ export class Conversations {
         flowType: kind,
         step: 0,
         nonce: nonce(),
-        payload: json({ data, id, keys }),
+        payload: json({
+          data,
+          id,
+          keys,
+          revision: id && kind !== "reject" ? revision(data) : undefined,
+        }),
         expiresAt: new Date(Date.now() + 3600000),
       },
     });
@@ -280,50 +220,82 @@ export class Conversations {
   ) {
     const state = await this.state(adminId, expected);
     const field = fieldFor(state);
-    if (!field) throw new AppError("Подтвердите результат или отмените мастер");
+    if (!field) throw new AppError(t("error.confirmWizard"));
     let parsed: unknown = value;
     if (field.nullable && (value === "ANY" || value === "-")) parsed = null;
     else if (field.type === "bool") {
       if (!["true", "false"].includes(String(value)))
-        throw new AppError("Выберите кнопку");
+        throw new AppError(t("error.chooseButton"));
       parsed = value === "true";
     } else if (field.type === "choice") {
       if (!field.options?.includes(String(value)))
-        throw new AppError("Выберите допустимое значение");
+        throw new AppError(t("error.chooseValue"));
     } else if (field.type === "number") {
       if (!/^-?\d{1,6}$/.test(String(value)))
-        throw new AppError("Введите целое число");
+        throw new AppError(t("error.integer"));
       parsed = Number(value);
     } else if (field.type === "money") {
       const amount = String(value).trim().replace(",", ".");
       if (!/^\d{1,9}(\.\d{1,2})?$/.test(amount))
-        throw new AppError("Введите сумму, не более двух знаков после точки");
+        throw new AppError(t("error.money"));
       parsed = amount;
-    } else if (field.type === "category" || field.type === "course") {
+    } else if (
+      field.type === "category" ||
+      field.type === "course" ||
+      field.type === "tariff"
+    ) {
       if (typeof value !== "string" || !/^[a-z0-9-]{1,40}$/.test(value))
-        throw new AppError("Выберите запись");
+        throw new AppError(t("error.chooseRecord"));
       if (field.type === "category")
         await this.db.courseCategory.findUniqueOrThrow({
           where: { id: value },
         });
-      else await this.db.course.findUniqueOrThrow({ where: { id: value } });
-    } else if (field.type === "cover" || field.type === "demo") {
+      else if (field.type === "course")
+        await this.db.course.findUniqueOrThrow({ where: { id: value } });
+      else
+        await this.db.courseTariff.findUniqueOrThrow({ where: { id: value } });
+    } else if (
+      field.type === "cover" ||
+      field.type === "demo" ||
+      field.type === "media"
+    ) {
       if (typeof value !== "object" || !value)
-        throw new AppError("Пришлите файл или URL");
+        throw new AppError(t("error.file"));
     } else {
-      if (typeof value !== "string") throw new AppError("Введите текст");
+      if (typeof value !== "string") throw new AppError(t("error.text"));
       parsed = value.trim();
       if (
         String(parsed).length > (field.max ?? 120) ||
-        (!parsed && field.key !== "supportUsername")
+        (!parsed &&
+          ![
+            "supportUsername",
+            "expertContact",
+            "trialDescriptionRU",
+            "trialDescriptionKZ",
+            "trialContactUsername",
+            "trialNotificationAdmins",
+          ].includes(field.key))
       )
-        throw new AppError(
-          "Текст пустой или слишком длинный (до " + (field.max ?? 120) + ")",
-        );
-      if (field.key === "supportUsername" && parsed === "-") parsed = "";
+        throw new AppError(t("error.textLength") + (field.max ?? 120) + ")");
+      if (
+        [
+          "supportUsername",
+          "expertContact",
+          "trialDescriptionRU",
+          "trialDescriptionKZ",
+          "trialContactUsername",
+          "trialNotificationAdmins",
+        ].includes(field.key) &&
+        parsed === "-"
+      )
+        parsed = "";
     }
     const p = payload(state);
-    if (field.type === "cover" || field.type === "demo")
+    if (
+      field.type === "cover" ||
+      field.type === "demo" ||
+      field.type === "media"
+    )
       Object.assign(p.data, parsed);
     else p.data[field.key] = parsed;
     const step = p.previewEdit ? p.keys.length : state.step + 1;
@@ -353,7 +325,7 @@ export class Conversations {
           })
         ).count
       )
-        throw new AppError("Кнопка устарела");
+        throw new AppError(t("error.stale"));
       return tx.adminConversationState.findUniqueOrThrow({
         where: { adminId },
       });
@@ -363,7 +335,7 @@ export class Conversations {
     const state = await this.state(adminId, expected),
       p = payload(state);
     if (state.step !== p.keys.length || !p.keys.includes(key))
-      throw new AppError("Изменение недоступно");
+      throw new AppError(t("error.editDenied"));
     const updated = await this.db.adminConversationState.updateMany({
       where: { adminId, nonce: expected },
       data: {
@@ -372,14 +344,14 @@ export class Conversations {
         payload: json({ ...p, previewEdit: true }),
       },
     });
-    if (!updated.count) throw new AppError("Кнопка устарела");
+    if (!updated.count) throw new AppError(t("error.stale"));
     return this.state(adminId);
   }
   async commit(adminId: string, expected: string) {
     const state = await this.state(adminId, expected),
       p = payload(state);
     if (state.step !== p.keys.length || state.flowType === "search")
-      throw new AppError("Мастер не завершён");
+      throw new AppError(t("error.wizardIncomplete"));
     if (state.flowType === "reject")
       return new PaymentService(this.db).review(
         adminId,
@@ -397,7 +369,15 @@ export class Conversations {
         current.nonce !== expected ||
         current.expiresAt < new Date()
       )
-        throw new AppError("Мастер уже завершён");
+        throw new AppError(t("error.wizardComplete"));
+      if (
+        p.id &&
+        p.revision &&
+        revision(
+          await readFormData(tx, state.flowType as keyof typeof fields, p.id),
+        ) !== p.revision
+      )
+        throw new AppError(t("error.changed"));
       const result = await new AdminService(this.db).saveTx(
         tx,
         adminId,

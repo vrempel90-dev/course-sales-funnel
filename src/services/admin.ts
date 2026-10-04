@@ -1,12 +1,22 @@
+import { t } from "../i18n";
 import { randomUUID } from "node:crypto";
 import { Prisma, PrismaClient, Role } from "@prisma/client";
 import { AppError } from "../lib/errors";
+import {
+  saveCategory,
+  saveCourse,
+  saveTariff,
+  saveTranslation,
+  saveFunnel,
+  saveBonus,
+  ensureTranslation,
+  TranslationKind,
+} from "./catalog";
+import type { Language } from "@prisma/client";
 import { atomic } from "./transaction";
 import { requireAdmin, Section } from "./auth";
 import {
   adminSchema,
-  categorySchema,
-  courseSchema,
   ruleSchema,
   clientSchema,
   configSchema,
@@ -20,8 +30,22 @@ export type Entity =
   | "admin"
   | "client"
   | "settings"
-  | "requisites";
+  | "requisites"
+  | "tariff"
+  | "funnel"
+  | "bonus"
+  | "ct"
+  | "kt"
+  | "tt"
+  | "bt";
 export const entitySection: Record<Entity, Section> = {
+  tariff: "tariffs",
+  funnel: "funnel",
+  bonus: "bonuses",
+  ct: "courses",
+  kt: "categories",
+  tt: "tariffs",
+  bt: "bonuses",
   category: "categories",
   course: "courses",
   rule: "rules",
@@ -58,7 +82,7 @@ export class AdminService {
           where: { adminId },
         });
         if (!state || state.nonce !== nonce || state.expiresAt < new Date())
-          throw new AppError("Мастер устарел. Откройте его заново.");
+          throw new AppError(t("error.wizardRestart"));
         if (
           !(
             await tx.adminConversationState.deleteMany({
@@ -66,7 +90,7 @@ export class AdminService {
             })
           ).count
         )
-          throw new AppError("Действие уже выполнено");
+          throw new AppError(t("error.done"));
       }
       return this.saveTx(tx, adminId, entity, input, id);
     });
@@ -81,26 +105,60 @@ export class AdminService {
     await requireAdmin(tx, adminId, entitySection[entity], true);
     let result: { id: string };
     let action: string;
+    let metadata: Prisma.InputJsonValue = {};
     if (entity === "category") {
-      const data = categorySchema.parse(input);
-      result = id
-        ? await tx.courseCategory.update({ where: { id }, data })
-        : await tx.courseCategory.create({
-            data: { ...data, slug: "category-" + randomUUID() },
-          });
+      result = await saveCategory(tx, input, "category-" + randomUUID(), id);
       action = id ? "CATEGORY_UPDATED" : "CATEGORY_CREATED";
     } else if (entity === "course") {
-      const data = courseSchema.parse(input);
-      result = id
-        ? await tx.course.update({ where: { id }, data })
-        : await tx.course.create({
-            data: { ...data, slug: "course-" + randomUUID() },
-          });
+      result = await saveCourse(tx, input, "course-" + randomUUID(), id);
       action = id
-        ? data.status === "ARCHIVED"
+        ? "status" in result && result.status === "ARCHIVED"
           ? "COURSE_ARCHIVED"
           : "COURSE_UPDATED"
         : "COURSE_CREATED";
+    } else if (entity === "tariff") {
+      const previous = id
+        ? await tx.courseTariff.findUniqueOrThrow({ where: { id } })
+        : null;
+      const tariff = await saveTariff(tx, input, id);
+      result = tariff;
+      action = !id
+        ? "TARIFF_CREATED"
+        : previous?.active && !tariff.active
+          ? "TARIFF_DISABLED"
+          : "TARIFF_UPDATED";
+      metadata = {
+        before: previous
+          ? {
+              priceKZT: previous.priceKZT.toString(),
+              priceRUB: previous.priceRUB.toString(),
+              active: previous.active,
+            }
+          : null,
+        after: {
+          priceKZT: tariff.priceKZT.toString(),
+          priceRUB: tariff.priceRUB.toString(),
+          active: tariff.active,
+        },
+      };
+    } else if (["ct", "kt", "tt", "bt"].includes(entity)) {
+      if (!id) throw new AppError(t("error.translationMissing"));
+      result = await saveTranslation(tx, entity as TranslationKind, input, id);
+      action =
+        entity === "ct"
+          ? "COURSE_UPDATED"
+          : entity === "kt"
+            ? "CATEGORY_UPDATED"
+            : entity === "tt"
+              ? "TARIFF_UPDATED"
+              : "BONUS_UPDATED";
+    } else if (entity === "funnel" || entity === "bonus") {
+      if (!id) throw new AppError(t("error.recordMissing"));
+      result =
+        entity === "funnel"
+          ? await saveFunnel(tx, input, id)
+          : await saveBonus(tx, input, id);
+      action = entity === "funnel" ? "FUNNEL_CONTENT_UPDATED" : "BONUS_UPDATED";
     } else if (entity === "rule") {
       const data = ruleSchema.parse(input);
       result = id
@@ -113,18 +171,23 @@ export class AdminService {
           });
       action = id ? "RECOMMENDATION_UPDATED" : "RECOMMENDATION_CREATED";
     } else if (entity === "admin") {
-      if (id) throw new AppError("Используйте управление ролью/активностью");
+      if (id) throw new AppError(t("error.roleControls"));
       const data = adminSchema.parse(input);
       result = await tx.adminUser.create({
         data: { ...data, telegramId: BigInt(data.telegramId) },
       });
       action = "ADMIN_CREATED";
     } else if (entity === "client") {
-      if (!id) throw new AppError("Клиент не выбран");
-      result = await tx.user.update({
-        where: { id },
-        data: clientSchema.parse(input),
-      });
+      if (!id) throw new AppError(t("error.clientMissing"));
+      const data = clientSchema.parse(input);
+      if (data.selectedTariffId) {
+        const tariff = await tx.courseTariff.findUniqueOrThrow({
+          where: { id: data.selectedTariffId },
+        });
+        if (tariff.courseId !== data.selectedCourseId)
+          throw new AppError(t("error.clientTariff"));
+      }
+      result = await tx.user.update({ where: { id }, data });
       action = "CLIENT_UPDATED";
       await tx.funnelEvent.create({
         data: { userId: id, type: "client_updated", metadata: { adminId } },
@@ -154,7 +217,7 @@ export class AdminService {
       });
       action = "PAYMENT_SETTINGS_UPDATED";
     }
-    await audit(tx, adminId, action, entity, result.id);
+    await audit(tx, adminId, action, entity, result.id, metadata);
     return result;
   }
   async changeStaff(
@@ -173,8 +236,7 @@ export class AdminService {
         const count = await tx.adminUser.count({
           where: { active: true, role: "OWNER" },
         });
-        if (count <= 1)
-          throw new AppError("Нельзя отключить или понизить последнего OWNER");
+        if (count <= 1) throw new AppError(t("error.lastOwner"));
       }
       const updated = await tx.adminUser.update({
         where: { id },
@@ -219,13 +281,13 @@ export class AdminService {
       await requireAdmin(tx, adminId, "requests", true);
       const req = await tx.managerRequest.findUniqueOrThrow({ where: { id } });
       if (req.status === "RESOLVED" && status === "IN_PROGRESS")
-        throw new AppError("Запрос уже закрыт");
+        throw new AppError(t("error.requestClosed"));
       if (
         status === "IN_PROGRESS" &&
         req.assignedToAdminId &&
         req.assignedToAdminId !== adminId
       )
-        throw new AppError("Запрос уже взят другим администратором");
+        throw new AppError(t("error.requestAssigned"));
       const updated = await tx.managerRequest.update({
         where: { id },
         data: { status, assignedToAdminId: req.assignedToAdminId || adminId },
@@ -234,6 +296,61 @@ export class AdminService {
         status,
       });
       return updated;
+    });
+  }
+  async language(adminId: string, language: Language) {
+    if (!["RU", "KZ"].includes(language))
+      throw new AppError(t("error.unknownLanguage"));
+    return atomic(this.db, async (tx) => {
+      await requireAdmin(tx, adminId, "languages", true);
+      const admin = await tx.adminUser.update({
+        where: { id: adminId },
+        data: { language },
+      });
+      await audit(tx, adminId, "SETTINGS_UPDATED", "AdminUser", adminId, {
+        language,
+      });
+      return admin;
+    });
+  }
+  async translation(
+    adminId: string,
+    kind: TranslationKind,
+    parentId: string,
+    language: Language,
+  ) {
+    return atomic(this.db, async (tx) => {
+      await requireAdmin(tx, adminId, entitySection[kind], true);
+      return ensureTranslation(tx, kind, parentId, language);
+    });
+  }
+  async deleteTariff(adminId: string, id: string) {
+    return atomic(this.db, async (tx) => {
+      await requireAdmin(tx, adminId, "tariffs", true);
+      const used = await tx.courseTariff.findUniqueOrThrow({
+        where: { id },
+        include: {
+          _count: {
+            select: {
+              payments: true,
+              enrollments: true,
+              selectedUsers: true,
+              events: true,
+            },
+          },
+        },
+      });
+      if (Object.values(used._count).some((n) => n > 0)) {
+        await tx.courseTariff.update({
+          where: { id },
+          data: { active: false },
+        });
+        await audit(tx, adminId, "TARIFF_DISABLED", "CourseTariff", id);
+      } else {
+        await tx.courseTariff.delete({ where: { id } });
+        await audit(tx, adminId, "TARIFF_DELETED", "CourseTariff", id);
+      }
+      return { courseId: used.courseId };
     });
   }
   async settings() {

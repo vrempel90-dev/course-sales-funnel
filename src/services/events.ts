@@ -1,4 +1,25 @@
 import { FunnelStage, Prisma } from "@prisma/client";
+// Vocabulary for the future client flow; no client handlers or jobs are started.
+export const funnelEventTypes = [
+  "TELEGRAM_STARTED",
+  "LANGUAGE_SELECTED",
+  "PRIMARY_GOAL_SELECTED",
+  "QUALIFICATION_ANSWERED",
+  "BONUS_OFFERED",
+  "BONUS_VIEWED",
+  "COURSES_SHOWN",
+  "COURSE_OPENED",
+  "TARIFF_SELECTED",
+  "CHECKOUT_STARTED",
+  "RECEIPT_UPLOADED",
+  "PAYMENT_CONFIRMED",
+  "PAYMENT_REJECTED",
+  "ENROLLMENT_CREATED",
+  "ACCESS_GRANTED",
+  "ACCESS_FAILED",
+  "MANAGER_REQUESTED",
+  "TRIAL_REQUESTED",
+] as const;
 export async function event(
   tx: Prisma.TransactionClient,
   userId: string,
