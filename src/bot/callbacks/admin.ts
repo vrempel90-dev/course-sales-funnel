@@ -12,6 +12,7 @@ import { WizardView } from "../admin/wizards";
 import { back, button, sections } from "../keyboards/admin";
 import { display } from "../messages";
 import { pageIndex } from "../../utils/pagination";
+import { tr } from "../client/i18n";
 function section(value: string): Section {
   if (!Object.hasOwn(sections, value)) throw new AppError("Неизвестный раздел");
   return value as Section;
@@ -40,7 +41,30 @@ export async function callback(
     else if (op === "edit")
       await wizard.show(ctx, await flows.editPreview(admin.id, nonce, value));
     else if (op === "save") {
+      const stateBefore = await flows.state(admin.id, nonce);
+      const paymentId =
+        stateBefore.flowType === "reject"
+          ? (stateBefore.payload as unknown as { id?: string }).id
+          : undefined;
       await flows.commit(admin.id, nonce);
+      if (paymentId) {
+        const payment = await db.payment.findUnique({
+          where: { id: paymentId },
+          include: { user: true },
+        });
+        if (payment) {
+          const t = tr(payment.user.language);
+          await ctx.api
+            .sendMessage(
+              payment.user.telegramId.toString(),
+              t.rejected +
+                (payment.rejectionReason
+                  ? "\n\n" + payment.rejectionReason
+                  : ""),
+            )
+            .catch(() => {});
+        }
+      }
       await display(ctx, "✅ Сохранено", back());
     } else throw new AppError("Некорректная кнопка");
     return;
@@ -116,10 +140,44 @@ export async function callback(
       );
       break;
     }
-    case "approve":
+    case "approve": {
+      const before = await db.payment.findUniqueOrThrow({
+        where: { id: args[0] },
+        include: { user: true },
+      });
       await new PaymentService(db).review(admin.id, args[0], true);
+      const enrollment = await db.enrollment.findUnique({
+        where: { paymentId: args[0] },
+      });
+      if (enrollment) {
+        const access = await new AccessService(
+          db,
+          new GrammyGateway(ctx.api),
+        ).retry(enrollment.id, admin.id);
+        const t = tr(before.user.language);
+        if (access.accessStatus === "GRANTED" && access.telegramInviteLink) {
+          await ctx.api
+            .sendMessage(before.user.telegramId.toString(), t.approved, {
+              reply_markup: new InlineKeyboard().url(
+                before.user.language === "KZ"
+                  ? "🎓 Оқуға өту"
+                  : "🎓 Перейти к обучению",
+                access.telegramInviteLink,
+              ),
+            })
+            .catch(() => {});
+        } else {
+          await ctx.api
+            .sendMessage(
+              before.user.telegramId.toString(),
+              t.approvedManual,
+            )
+            .catch(() => {});
+        }
+      }
       await views.card(ctx, admin, "payments", args[0]);
       break;
+    }
     case "reject": {
       await requireAdmin(db, admin.id, "payments", true);
       const k = new InlineKeyboard();
@@ -153,6 +211,19 @@ export async function callback(
           false,
           reasons[args[1]],
         );
+        const rejected = await db.payment.findUnique({
+          where: { id: args[0] },
+          include: { user: true },
+        });
+        if (rejected) {
+          const t = tr(rejected.user.language);
+          await ctx.api
+            .sendMessage(
+              rejected.user.telegramId.toString(),
+              t.rejected + "\n\n" + (rejected.rejectionReason ?? ""),
+            )
+            .catch(() => {});
+        }
         await views.card(ctx, admin, "payments", args[0]);
       }
       break;
