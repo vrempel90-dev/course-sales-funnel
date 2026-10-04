@@ -222,14 +222,36 @@ async function main() {
     await db.course.updateMany({ where: { slug }, data: { status: "ARCHIVED" } });
   }
 
-  for (const [country, currency, title] of [
-    ["KZ", "KZT", "Kaspi"],
-    ["RU", "RUB", "Банковский перевод"],
-  ] as const) {
+  const paymentSettings = [
+    {
+      country: "KZ" as const,
+      currency: "KZT" as const,
+      title: "Kaspi",
+      enabled: true,
+      instruction: "Оплатите курс через Kaspi по кнопке ниже. После оплаты вернитесь в бот, нажмите «Я оплатил» и отправьте чек.",
+      requisites: "https://pay.kaspi.kz/pay/ajkfewqw",
+    },
+    {
+      country: "RU" as const,
+      currency: "RUB" as const,
+      title: "Банковский перевод",
+      enabled: false,
+      instruction: "",
+      requisites: "",
+    },
+  ];
+
+  for (const setting of paymentSettings) {
     await db.paymentMethodSetting.upsert({
-      where: { country },
-      update: {},
-      create: { country, currency, title, enabled: false },
+      where: { country: setting.country },
+      update: {
+        currency: setting.currency,
+        title: setting.title,
+        enabled: setting.enabled,
+        instruction: setting.instruction,
+        requisites: setting.requisites,
+      },
+      create: setting,
     });
   }
 
