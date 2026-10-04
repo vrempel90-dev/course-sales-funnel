@@ -7,12 +7,14 @@ import { WizardView } from "./admin/wizards";
 import { authenticate } from "./middleware/admin";
 import { registerAdmin } from "./commands/admin";
 import { callback } from "./callbacks/admin";
+import { ClientBot } from "./client";
 
 export function createBot(token: string, db: PrismaClient, username?: string) {
   const bot = new Bot(token),
     flows = new Conversations(db),
     views = new AdminViews(db, flows, username),
-    wizard = new WizardView(db, flows);
+    wizard = new WizardView(db, flows),
+    client = new ClientBot(db);
 
   bot.use(async (ctx, next) => {
     try {
@@ -21,7 +23,7 @@ export function createBot(token: string, db: PrismaClient, username?: string) {
       if (!(error instanceof AppError) || error.status !== 403)
         await recordError(db, error, {
           updateId: ctx.update.update_id,
-          section: "admin",
+          section: "bot",
         });
 
       const text =
@@ -42,55 +44,72 @@ export function createBot(token: string, db: PrismaClient, username?: string) {
     }
   });
 
-  // Setup helper only. The client sales flow is intentionally not implemented
-  // in this admin-only release.
+  // /start is always the client flow, including for OWNER/ADMIN.
+  // Administration remains available separately through /admin.
   bot.command("start", async (ctx) => {
-    if (!ctx.from || ctx.chat.type !== "private") return;
+    await client.start(ctx);
+  });
 
-    const admin = await db.adminUser.findUnique({
-      where: { telegramId: BigInt(ctx.from.id) },
-    });
-
-    if (admin?.active) {
-      await ctx.reply(
-        "✅ Бот запущен.\n\nДля входа в административную панель отправьте /admin.",
-      );
+  bot.command("menu", async (ctx) => {
+    const user = await client.ensureUser(ctx);
+    if (!user.language) {
+      await client.start(ctx);
       return;
     }
-
-    await ctx.reply(
-      [
-        "✅ Бот запущен.",
-        "",
-        "Сейчас развёрнута только Telegram-админка.",
-        "",
-        `Ваш Telegram ID: ${ctx.from.id}`,
-        "",
-        "Укажите это число в Railway в переменной OWNER_TELEGRAM_ID, дождитесь перезапуска сервиса и затем отправьте /admin.",
-      ].join("\n"),
-    );
+    await client.showMenu(ctx, user);
   });
 
   registerAdmin(bot, db, views, flows);
 
   bot.on("callback_query:data", async (ctx) => {
+    const data = ctx.callbackQuery.data;
+    if (data.startsWith("c:")) {
+      await client.safeCallback(ctx, data);
+      await ctx.answerCallbackQuery().catch(() => {});
+      return;
+    }
+
     const admin = await authenticate(ctx, db);
     await callback(ctx, admin, db, views, wizard, flows);
     await ctx.answerCallbackQuery().catch(() => {});
   });
 
   bot.on("message", async (ctx) => {
+    if (!ctx.from || ctx.chat.type !== "private") return;
+
+    // Commands not handled above should not be interpreted as client text.
     if (ctx.message.text?.startsWith("/")) {
-      const admin = await authenticate(ctx, db);
-      await ctx.reply("Доступны /admin и /cancel. " + admin.role);
+      const admin = await db.adminUser.findUnique({
+        where: { telegramId: BigInt(ctx.from.id) },
+      });
+      if (admin?.active)
+        await ctx.reply("Доступны /start, /menu, /admin и /cancel.");
+      else await ctx.reply("Доступны /start и /menu.");
       return;
     }
 
-    const admin = await authenticate(ctx, db);
-    const result = await wizard.message(ctx, admin);
-    if (result && typeof result === "object")
-      await views.list(ctx, admin, "clients", "search", 0);
-    else if (!result) await ctx.reply("Откройте /admin и выберите действие.");
+    // If an administrator is currently inside an admin wizard, keep that
+    // workflow isolated from the client sales conversation.
+    const admin = await db.adminUser.findUnique({
+      where: { telegramId: BigInt(ctx.from.id) },
+    });
+    if (admin?.active) {
+      const state = await db.adminConversationState.findUnique({
+        where: { adminId: admin.id },
+      });
+      if (state) {
+        const result = await wizard.message(ctx, admin);
+        if (result && typeof result === "object")
+          await views.list(ctx, admin, "clients", "search", 0);
+        return;
+      }
+    }
+
+    if (await client.message(ctx)) return;
+
+    const user = await client.ensureUser(ctx);
+    if (!user.language) await client.start(ctx);
+    else await client.showMenu(ctx, user);
   });
 
   bot.catch(async (error) => {
