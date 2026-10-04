@@ -27,7 +27,10 @@
     "@prisma/client": "^6.19.3",
     "dotenv": "^18.0.5",
     "grammy": "^1.46.0",
-    "zod": "^4.6.5"
+    "zod": "^4.6.5",
+    "@napi-rs/canvas": "^1.0.9",
+    "jsqr": "^1.4.0",
+    "pdfjs-dist": "^6.3.289"
   },
   "devDependencies": {
     "@types/node": "^26.6.4",
