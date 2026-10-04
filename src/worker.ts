@@ -106,6 +106,7 @@ async function main() {
           await bot.api.deleteWebhook({ drop_pending_updates: false });
           await bot.api.setMyCommands([
             { command: "start", description: "Запустить бота" },
+            { command: "menu", description: "Главное меню" },
             { command: "admin", description: "Админ-панель" },
             { command: "cancel", description: "Отменить действие" },
           ]);
