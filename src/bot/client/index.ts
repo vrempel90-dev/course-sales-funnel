@@ -116,7 +116,6 @@ export class ClientBot {
     });
     const k = new InlineKeyboard()
       .text(t.goalProfessional, "c:goal:PROFESSIONAL")
-      .row()
       .text(t.goalFamily, "c:goal:FAMILY")
       .row()
       .text(t.goalBeauty, "c:goal:BEAUTY");
