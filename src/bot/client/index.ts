@@ -377,6 +377,73 @@ export class ClientBot {
       where: { country },
     });
     const t = tr(user.language);
+
+    if (country === "RU") {
+      const amount = current.selectedTariff.priceRUB;
+      const tariffName =
+        user.language === "KZ"
+          ? current.selectedTariff.titleKz || current.selectedTariff.titleRu
+          : current.selectedTariff.titleRu;
+      const courseName = title(user.language, current.selectedCourse);
+      const whatsappText =
+        "Здравствуйте! Хочу купить курс «" +
+        courseName +
+        "», тариф «" +
+        tariffName +
+        "». Стоимость: " +
+        money(amount) +
+        " ₽.";
+      const whatsappUrl =
+        "https://wa.me/77779854575?text=" +
+        encodeURIComponent(whatsappText);
+
+      await this.db.user.update({
+        where: { id: user.id },
+        data: {
+          selectedCourseId: current.selectedCourse.id,
+          selectedTariffId: current.selectedTariff.id,
+          currentFunnelStage: "WAITING_PAYMENT",
+          conversationStep: "IDLE",
+        },
+      });
+
+      await this.event(
+        user.id,
+        "CHECKOUT_STARTED",
+        current.selectedCourse.id,
+        current.selectedTariff.id,
+        {
+          country: "RU",
+          currency: "RUB",
+          method: "WHATSAPP",
+          amount: Number(amount),
+        },
+      );
+
+      const text =
+        "🇷🇺 Покупка для России\n\n" +
+        "📚 " +
+        courseName +
+        "\n" +
+        "🎓 " +
+        tariffName +
+        "\n\n" +
+        "💰 " +
+        money(amount) +
+        " ₽\n\n" +
+        "Нажмите кнопку ниже — откроется WhatsApp с уже заполненным сообщением для покупки курса.";
+
+      await ctx.reply(text, {
+        reply_markup: new InlineKeyboard()
+          .url("💬 Купить в WhatsApp", whatsappUrl)
+          .row()
+          .text(t.ask, "c:ask:" + current.selectedCourse.id)
+          .row()
+          .text(t.mainMenu, "c:menu"),
+      });
+      return;
+    }
+
     if (!setting?.enabled || !setting.instruction.trim() || !setting.requisites.trim()) {
       await ctx.reply(t.paymentNotConfigured, {
         reply_markup: new InlineKeyboard()
