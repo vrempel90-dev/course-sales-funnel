@@ -234,10 +234,10 @@ async function main() {
     {
       country: "RU" as const,
       currency: "RUB" as const,
-      title: "Банковский перевод",
-      enabled: false,
-      instruction: "",
-      requisites: "",
+      title: "WhatsApp",
+      enabled: true,
+      instruction: "Для покупки курса свяжитесь с экспертом в WhatsApp.",
+      requisites: "https://wa.me/77779854575",
     },
   ];
 
