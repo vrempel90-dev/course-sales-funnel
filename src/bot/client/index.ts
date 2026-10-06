@@ -227,7 +227,7 @@ export class ClientBot {
     let fileId = typeof value.fileId === "string" ? value.fileId : "";
     let url = typeof value.url === "string" ? value.url : "";
 
-    if (!fileId && !url && (professionalVariant === "practicing" || (kind === "professional" && !professionalVariant))) {
+    if (!fileId && !url && (professionalVariant || kind === "professional")) {
       const legacy = await this.db.setting.findUnique({
         where: { key: "client.bonus.professional" },
       });
