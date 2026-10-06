@@ -25,6 +25,21 @@ type BonusKind =
   | "family"
   | "beauty";
 
+const selfTariffDetails = `🎓 Самостоятельный
+
+Что входит:
+✅ Доступ к видеоурокам на 3 месяца для самостоятельного обучения
+✅ Методическое пособие по выбранному направлению
+✅ Общий чат учеников
+✅ Электронный или бумажный сертификат
+
+Чего НЕТ в этом тарифе:
+
+❌ Нет домашних заданий и их проверки, разбора видео с постановкой рук.
+❌ Нет обратной связи от автора курса или куратора.
+❌ Нет участия в живых Zoom-созвонах.
+❌ Нет доступа к личной консультации`;
+
 function title(language: Language | null, course: { slug: string; title: string }) {
   return language === "KZ" ? courseTitleKz[course.slug] ?? course.title : course.title;
 }
@@ -380,12 +395,18 @@ export class ClientBot {
       code: tariff.code,
     });
     const t = tr(user.language);
+    const countryKeyboard = new InlineKeyboard()
+      .text(t.kz, "c:country:KZ")
+      .text(t.ruCountry, "c:country:RU")
+      .row()
+      .text(t.back, "c:course:" + tariff.courseId);
+
+    if (tariff.code === "SELF") {
+      await ctx.reply(selfTariffDetails);
+    }
+
     await ctx.reply(t.countryTitle, {
-      reply_markup: new InlineKeyboard()
-        .text(t.kz, "c:country:KZ")
-        .text(t.ruCountry, "c:country:RU")
-        .row()
-        .text(t.back, "c:course:" + tariff.courseId),
+      reply_markup: countryKeyboard,
     });
   }
 
