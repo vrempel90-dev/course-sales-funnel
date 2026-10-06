@@ -270,6 +270,22 @@ async function main() {
     create: { key: "client.bonus.professional", value: { fileId: null, url: null } },
   });
   await db.setting.upsert({
+    where: { key: "client.bonus.professional.beginner" },
+    update: {},
+    create: {
+      key: "client.bonus.professional.beginner",
+      value: { fileId: null, url: null },
+    },
+  });
+  await db.setting.upsert({
+    where: { key: "client.bonus.professional.practicing" },
+    update: {},
+    create: {
+      key: "client.bonus.professional.practicing",
+      value: { fileId: null, url: null },
+    },
+  });
+  await db.setting.upsert({
     where: { key: "client.bonus.family" },
     update: {},
     create: { key: "client.bonus.family", value: { fileId: null, url: null } },

@@ -18,6 +18,13 @@ import { courseTitleKz, tr } from "./i18n";
 const money = (value: Prisma.Decimal | number | string) =>
   new Intl.NumberFormat("ru-RU", { maximumFractionDigits: 0 }).format(Number(value));
 
+type BonusKind =
+  | "professional"
+  | "professional-beginner"
+  | "professional-practicing"
+  | "family"
+  | "beauty";
+
 function title(language: Language | null, course: { slug: string; title: string }) {
   return language === "KZ" ? courseTitleKz[course.slug] ?? course.title : course.title;
 }
@@ -196,14 +203,39 @@ export class ClientBot {
     await ctx.reply(t.beautyQuestion, { reply_markup: k });
   }
 
-  async sendBonus(ctx: Context, user: User, kind: "professional" | "family" | "beauty") {
+  async sendBonus(ctx: Context, user: User, kind: BonusKind) {
     const t = tr(user.language);
+    const professionalVariant =
+      kind === "professional-beginner"
+        ? "beginner"
+        : kind === "professional-practicing"
+          ? "practicing"
+          : kind === "professional"
+            ? user.experienceLevel === "BEGINNER"
+              ? "beginner"
+              : user.experienceLevel === "PRACTICING"
+                ? "practicing"
+                : null
+            : null;
+    const settingKey = professionalVariant
+      ? "client.bonus.professional." + professionalVariant
+      : "client.bonus." + kind;
     const setting = await this.db.setting.findUnique({
-      where: { key: "client.bonus." + kind },
+      where: { key: settingKey },
     });
     const value = (setting?.value ?? {}) as Record<string, unknown>;
-    const fileId = typeof value.fileId === "string" ? value.fileId : "";
-    const url = typeof value.url === "string" ? value.url : "";
+    let fileId = typeof value.fileId === "string" ? value.fileId : "";
+    let url = typeof value.url === "string" ? value.url : "";
+
+    if (!fileId && !url && (professionalVariant === "practicing" || (kind === "professional" && !professionalVariant))) {
+      const legacy = await this.db.setting.findUnique({
+        where: { key: "client.bonus.professional" },
+      });
+      const legacyValue = (legacy?.value ?? {}) as Record<string, unknown>;
+      fileId = typeof legacyValue.fileId === "string" ? legacyValue.fileId : "";
+      url = typeof legacyValue.url === "string" ? legacyValue.url : "";
+    }
+
     try {
       if (fileId && kind === "family") await ctx.replyWithDocument(fileId);
       else if (fileId) await ctx.replyWithVideo(fileId);
@@ -218,7 +250,10 @@ export class ClientBot {
     } catch {
       await ctx.reply(t.bonusMissing);
     }
-    await this.event(user.id, "BONUS_VIEWED", null, null, { kind });
+    await this.event(user.id, "BONUS_VIEWED", null, null, {
+      kind: kind.startsWith("professional") ? "professional" : kind,
+      ...(professionalVariant ? { variant: professionalVariant } : {}),
+    });
   }
 
   async listCourses(
@@ -656,8 +691,13 @@ export class ClientBot {
         value === "BEGINNER"
           ? t.professionalBenefit
           : t.professionalExperiencedBenefit;
+      const professionalBonus =
+        value === "BEGINNER" ? "professional-beginner" : "professional-practicing";
       await ctx.reply(professionalMessage, {
-        reply_markup: new InlineKeyboard().text(t.professionalBonus, "c:bonus:professional"),
+        reply_markup: new InlineKeyboard().text(
+          t.professionalBonus,
+          "c:bonus:" + professionalBonus,
+        ),
       });
     } else if (action === "family") {
       // Backward compatibility for old inline buttons that may still exist
@@ -704,10 +744,18 @@ export class ClientBot {
         reply_markup: new InlineKeyboard().text(t.beautyBonus, "c:bonus:beauty"),
       });
     } else if (action === "bonus") {
-      if (!["professional", "family", "beauty"].includes(value))
+      const bonusKinds: BonusKind[] = [
+        "professional",
+        "professional-beginner",
+        "professional-practicing",
+        "family",
+        "beauty",
+      ];
+      if (!bonusKinds.includes(value as BonusKind))
         throw new AppError("Некорректный бонус");
-      await this.sendBonus(ctx, user, value as "professional" | "family" | "beauty");
-      if (value === "professional") await this.listCourses(ctx, user, "professional");
+      await this.sendBonus(ctx, user, value as BonusKind);
+      if (value.startsWith("professional"))
+        await this.listCourses(ctx, user, "professional");
       else if (value === "family") {
         await this.listCourses(ctx, user, "home");
       } else {
