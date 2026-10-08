@@ -831,7 +831,7 @@ export class ClientBot {
           current.beautyProfession === "NAILS"
             ? ["express-hands"]
             : current.beautyProfession === "HAIR"
-              ? ["express-neck-head"]
+              ? ["express-hair-spa"]
               : current.beautyProfession === "DEPILATION"
                 ? ["express-legs", "express-hands"]
                 : ["express-neck-head"];
