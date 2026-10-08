@@ -10,6 +10,7 @@ export const courseTitleKz: Record<string, string> = {
   "home-massage-therapist": "Үй массажшысы",
   "express-hands": "Қол мен білезікке экспресс-массаж",
   "express-legs": "Депиляциядан кейін аяқ пен қолға экспресс-массаж",
+  "express-hair-spa": "Мойын-жаға аймағы мен бас терісіне экспресс-массаж",
   "express-neck-head": "Мойын-жаға аймағы мен бетке Гуаша массажы",
   "express-face": "Бетке экспресс-массаж",
   guasha: "Гуаша массажы",
