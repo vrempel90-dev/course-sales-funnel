@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { ru, kz, courseTitleKz } from "../src/bot/client/i18n";
 import { permitted } from "../src/services/auth";
 import { runtimeConfig } from "../src/lib/config";
 import { safeError } from "../src/lib/errors";
@@ -102,5 +103,16 @@ describe("roles and validation", () => {
     expect(courseSchema.shape.telegramChannelId.safeParse("123").success).toBe(
       false,
     );
+  });
+});
+
+
+describe("hair specialist onboarding copy", () => {
+  it("introduces neck and scalp massage before the course list in both languages", () => {
+    expect(ru.beautyHair).toContain("Пока выдерживается состав");
+    expect(ru.beautyHair).toContain("мытья головы");
+    expect(kz.beautyHair).toContain("шаш жуу кезінде");
+    expect(ru.beautyHair).not.toContain("Медицинский эффект");
+    expect(courseTitleKz["express-hair-spa"]).toContain("бас терісіне");
   });
 });
