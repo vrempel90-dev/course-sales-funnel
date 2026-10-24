@@ -13,7 +13,8 @@ import { verifyKaspiReceiptPdf } from "../../services/kaspi_receipt_verifier";
 import { PaymentService } from "../../services/payments";
 import { AccessService } from "../../services/access";
 import { GrammyGateway } from "../gateway";
-import { courseTitleKz, tr } from "./i18n";
+import { courseTitleKz } from "./i18n";
+import { botCopy, fillText, type BotCopy } from "../../services/bot-copy";
 
 const money = (value: Prisma.Decimal | number | string) =>
   new Intl.NumberFormat("ru-RU", { maximumFractionDigits: 0 }).format(Number(value));
@@ -25,75 +26,19 @@ type BonusKind =
   | "family"
   | "beauty";
 
-const selfTariffDetails = `🎓 Самостоятельный
-
-Что входит:
-✅ Доступ к видеоурокам на 3 месяца для самостоятельного обучения
-✅ Методическое пособие по выбранному направлению
-✅ Общий чат учеников
-✅ Электронный или бумажный сертификат
-
-Чего НЕТ в этом тарифе:
-
-❌ Нет домашних заданий и их проверки, разбора видео с постановкой рук.
-❌ Нет обратной связи от автора курса или куратора.
-❌ Нет участия в живых Zoom-созвонах.
-❌ Нет доступа к личной консультации`;
-
-const curatorTariffDetails = `🎓 С куратором
-
-Что входит:
-✅ Доступ к видеоурокам на 6 месяцев обучения
-✅ Методическое пособие по выбранному направлению
-✅ Общий чат учеников
-✅ Проверка домашних заданий и постановка рук:
-Ученик записывает видео отработки техники на модели и отправляет куратору.
-Куратор детально разбирает ошибки: правильность нажима, угол постановки кисти, скорость и ритм движений.
-✅ Закрытый рабочий чат поддержки
-✅ Групповые онлайн-созвоны раз в 2 недели, где куратор разбирает сложные темы и отвечает на вопросы учеников
-✅ Проверка финального практического видео-зачёта
-✅ Электронный или бумажный сертификат
-
-Чего НЕТ в этом тарифе:
-
-❌ Блок «Продажи»
-Готовые скрипты переписки с клиентами и закрытия на абонементы
-❌ Блок «Личный бренд»
-Разбор и докрутка соцсетей/профилей ученика
-❌ Банк идей для Reels / Shorts: 30 готовых сценариев роликов для привлечения локальной аудитории`;
-
-const mentorshipTariffDetails = `🎓 Наставничество
-
-Что входит:
-✅ Доступ к видеоурокам на 12 месяцев обучения
-✅ Методическое пособие по выбранному направлению
-✅ Общий чат учеников
-✅ Проверка домашних заданий и постановка рук:
-Ученик записывает видео отработки техники на модели и отправляет куратору.
-Куратор детально разбирает ошибки: правильность нажима, угол постановки кисти, скорость и ритм движений.
-✅ Закрытый рабочий чат поддержки
-✅ Групповые онлайн-созвоны раз в 2 недели, где куратор разбирает сложные темы и отвечает на вопросы учеников
-✅ Проверка финального практического видео-зачёта
-✅ Электронный или бумажный сертификат
-✅ Блок «Продажи»
-Готовые скрипты переписки с клиентами и закрытия на абонементы.
-✅ Блок «Личный бренд»
-Разбор и докрутка соцсетей/профилей ученика.
-✅ Банк идей для Reels / Shorts: 30 готовых сценариев роликов для привлечения локальной аудитории.
-✅ Личная консультация`;
-
-function title(language: Language | null, course: { slug: string; title: string }) {
-  return language === "KZ" ? courseTitleKz[course.slug] ?? course.title : course.title;
+function title(language: Language | null, course: { slug: string; title: string }, t: BotCopy) {
+  return language === "KZ" ? t["courseTitle." + course.slug] ?? courseTitleKz[course.slug] ?? course.title : course.title;
 }
 
-function langKeyboard() {
+async function langKeyboard(db: PrismaClient) {
+  const t = await botCopy(db, null);
   return new InlineKeyboard()
-    .text("🇷🇺 Русский", "c:lang:RU")
-    .text("🇰🇿 Қазақша", "c:lang:KZ");
+    .text(t.languageRu, "c:lang:RU")
+    .text(t.languageKz, "c:lang:KZ");
 }
 
-function menuKeyboard(language: Language | null) {
-  const t = tr(language);
+async function menuKeyboard(db: PrismaClient, language: Language | null) {
+  const t = await botCopy(db, language);
   return new InlineKeyboard()
     .text(t.chooseTraining, "c:welcome")
     .row()
@@ -104,8 +49,8 @@ function menuKeyboard(language: Language | null) {
     .text(t.language, "c:language");
 }
 
-function backMenu(language: Language | null) {
-  return new InlineKeyboard().text(tr(language).mainMenu, "c:menu");
+async function backMenu(db: PrismaClient, language: Language | null) {
+  return new InlineKeyboard().text((await botCopy(db, language)).mainMenu, "c:menu");
 }
 
 export class ClientBot {
@@ -161,16 +106,16 @@ export class ClientBot {
       where: { id: user.id },
       data: { conversationStep: "LANGUAGE" },
     });
-    await ctx.reply(tr(null).chooseLanguage, { reply_markup: langKeyboard() });
+    await ctx.reply((await botCopy(this.db, null)).chooseLanguage, { reply_markup: await langKeyboard(this.db) });
   }
 
   async showMenu(ctx: Context, user: User) {
-    const t = tr(user.language);
-    await ctx.reply(t.mainMenu, { reply_markup: menuKeyboard(user.language) });
+    const t = (await botCopy(this.db, user.language));
+    await ctx.reply(t.mainMenu, { reply_markup: await menuKeyboard(this.db, user.language) });
   }
 
   async welcome(ctx: Context, user: User) {
-    const t = tr(user.language);
+    const t = (await botCopy(this.db, user.language));
     await this.db.user.update({
       where: { id: user.id },
       data: {
@@ -187,7 +132,7 @@ export class ClientBot {
   }
 
   async professional(ctx: Context, user: User) {
-    const t = tr(user.language);
+    const t = (await botCopy(this.db, user.language));
     await this.db.user.update({
       where: { id: user.id },
       data: {
@@ -210,7 +155,7 @@ export class ClientBot {
   }
 
   async family(ctx: Context, user: User) {
-    const t = tr(user.language);
+    const t = (await botCopy(this.db, user.language));
     await this.db.user.update({
       where: { id: user.id },
       data: {
@@ -234,7 +179,7 @@ export class ClientBot {
   }
 
   async beauty(ctx: Context, user: User) {
-    const t = tr(user.language);
+    const t = (await botCopy(this.db, user.language));
     await this.db.user.update({
       where: { id: user.id },
       data: {
@@ -261,7 +206,7 @@ export class ClientBot {
   }
 
   async sendBonus(ctx: Context, user: User, kind: BonusKind) {
-    const t = tr(user.language);
+    const t = (await botCopy(this.db, user.language));
     const professionalVariant =
       kind === "professional-beginner"
         ? "beginner"
@@ -299,7 +244,7 @@ export class ClientBot {
       else if (url)
         await ctx.reply(url, {
           reply_markup: new InlineKeyboard().url(
-            user.language === "KZ" ? "Ашу" : "Открыть",
+            t.bonusOpen,
             url,
           ),
         });
@@ -319,7 +264,7 @@ export class ClientBot {
     categorySlug: string,
     onlySlugs?: string[],
   ) {
-    const t = tr(user.language);
+    const t = (await botCopy(this.db, user.language));
     const category = await this.db.courseCategory.findUnique({
       where: { slug: categorySlug },
     });
@@ -334,8 +279,8 @@ export class ClientBot {
       include: { tariffs: { where: { active: true }, orderBy: { sortOrder: "asc" } } },
     });
     if (!rows.length) {
-      await ctx.reply(user.language === "KZ" ? "Бағдарламалар әзірге қолжетімсіз." : "Программы пока недоступны.", {
-        reply_markup: backMenu(user.language),
+      await ctx.reply(t.noPrograms, {
+        reply_markup: await backMenu(this.db, user.language),
       });
       return;
     }
@@ -343,7 +288,7 @@ export class ClientBot {
     const k = new InlineKeyboard();
     for (const course of rows) {
       k.text(
-        title(user.language, course),
+        title(user.language, course, t),
         "c:course:" + course.id,
       ).row();
     }
@@ -352,7 +297,7 @@ export class ClientBot {
   }
 
   async showCourse(ctx: Context, user: User, courseId: string) {
-    const t = tr(user.language);
+    const t = (await botCopy(this.db, user.language));
     const course = await this.db.course.findUniqueOrThrow({
       where: { id: courseId },
       include: {
@@ -377,11 +322,11 @@ export class ClientBot {
       : money(course.priceKZT) + " ₸ / " + money(course.priceRUB) + " ₽";
     const description =
       user.language === "KZ"
-        ? "Онлайн оқу бағдарламасы. Толық бағдарлама мен материалдарды әкімші курс карточкасында жаңарта алады."
+        ? t.courseDescriptionKz
         : course.fullDescription;
     const text =
       "📚 " +
-      title(user.language, course) +
+      title(user.language, course, t) +
       "\n\n" +
       description +
       "\n\n💰 " +
@@ -398,7 +343,7 @@ export class ClientBot {
   }
 
   async showTariffs(ctx: Context, user: User, courseId: string) {
-    const t = tr(user.language);
+    const t = (await botCopy(this.db, user.language));
     const tariffs = await this.db.courseTariff.findMany({
       where: { courseId, active: true },
       orderBy: { sortOrder: "asc" },
@@ -436,7 +381,7 @@ export class ClientBot {
     await this.event(user.id, "TARIFF_SELECTED", tariff.courseId, tariff.id, {
       code: tariff.code,
     });
-    const t = tr(user.language);
+    const t = (await botCopy(this.db, user.language));
     const countryKeyboard = new InlineKeyboard()
       .text(t.kz, "c:country:KZ")
       .text(t.ruCountry, "c:country:RU")
@@ -444,11 +389,11 @@ export class ClientBot {
       .text(t.back, "c:course:" + tariff.courseId);
 
     if (tariff.code === "SELF") {
-      await ctx.reply(selfTariffDetails);
+      await ctx.reply(t.selfTariffDetails);
     } else if (tariff.code === "CURATOR") {
-      await ctx.reply(curatorTariffDetails);
+      await ctx.reply(t.curatorTariffDetails);
     } else if (tariff.code === "MENTORSHIP") {
-      await ctx.reply(mentorshipTariffDetails);
+      await ctx.reply(t.mentorshipTariffDetails);
     }
 
     await ctx.reply(t.countryTitle, {
@@ -478,7 +423,7 @@ export class ClientBot {
     const setting = await this.db.paymentMethodSetting.findUnique({
       where: { country },
     });
-    const t = tr(user.language);
+    const t = (await botCopy(this.db, user.language));
 
     if (country === "RU") {
       const amount = current.selectedTariff.priceRUB;
@@ -486,15 +431,10 @@ export class ClientBot {
         user.language === "KZ"
           ? current.selectedTariff.titleKz || current.selectedTariff.titleRu
           : current.selectedTariff.titleRu;
-      const courseName = title(user.language, current.selectedCourse);
-      const whatsappText =
-        "Здравствуйте! Хочу купить курс «" +
-        courseName +
-        "», тариф «" +
-        tariffName +
-        "». Стоимость: " +
-        money(amount) +
-        " ₽.";
+      const courseName = title(user.language, current.selectedCourse, t);
+      const whatsappText = fillText(t.whatsappMessage, {
+        course: courseName, tariff: tariffName, amount: money(amount),
+      });
       const whatsappUrl =
         "https://wa.me/77779854575?text=" +
         encodeURIComponent(whatsappText);
@@ -522,22 +462,13 @@ export class ClientBot {
         },
       );
 
-      const text =
-        "🇷🇺 Покупка для России\n\n" +
-        "📚 " +
-        courseName +
-        "\n" +
-        "🎓 " +
-        tariffName +
-        "\n\n" +
-        "💰 " +
-        money(amount) +
-        " ₽\n\n" +
-        "Нажмите кнопку ниже — откроется WhatsApp с уже заполненным сообщением для покупки курса.";
+      const text = fillText(t.whatsappIntro, {
+        course: courseName, tariff: tariffName, amount: money(amount),
+      });
 
       await ctx.reply(text, {
         reply_markup: new InlineKeyboard()
-          .url("💬 Купить в WhatsApp", whatsappUrl)
+          .url(t.whatsappButton, whatsappUrl)
           .row()
           .text(t.ask, "c:ask:" + current.selectedCourse.id)
           .row()
@@ -563,10 +494,7 @@ export class ClientBot {
     const isKaspiCheckout =
       country === "KZ" &&
       setting.requisites.startsWith("https://pay.kaspi.kz/");
-    const kaspiInstruction =
-      user.language === "KZ"
-        ? "1. Төмендегі батырма арқылы нақты соманы төлеңіз.\n2. Ботқа оралып, «Төледім» батырмасын басыңыз.\n3. Kaspi-дің түпнұсқа фискалдық PDF-чегін жіберіңіз — бот оны автоматты түрде тексереді."
-        : "1. Оплатите точную сумму по кнопке ниже.\n2. Вернитесь в бот и нажмите «Я оплатил(а)».\n3. Отправьте исходный фискальный чек Kaspi в формате PDF — бот проверит его автоматически.";
+    const kaspiInstruction = t.kaspiInstruction;
     const effectiveInstruction = isKaspiCheckout
       ? kaspiInstruction
       : setting.instruction;
@@ -610,7 +538,7 @@ export class ClientBot {
         : current.selectedTariff.titleRu;
     const text =
       "💳 " +
-      title(user.language, current.selectedCourse) +
+      title(user.language, current.selectedCourse, t) +
       "\n" +
       tariffName +
       "\n\n" +
@@ -624,9 +552,7 @@ export class ClientBot {
     if (isKaspiCheckout) {
       paymentKeyboard
         .url(
-          user.language === "KZ"
-            ? "💳 " + money(amount) + " ₸ Kaspi арқылы төлеу"
-            : "💳 Оплатить " + money(amount) + " ₸ через Kaspi",
+          fillText(t.kaspiPayButton, { amount: money(amount) }),
           setting.requisites,
         )
         .row();
@@ -644,7 +570,7 @@ export class ClientBot {
   }
 
   async ask(ctx: Context, user: User, courseId?: string) {
-    const t = tr(user.language);
+    const t = (await botCopy(this.db, user.language));
     await this.db.user.update({
       where: { id: user.id },
       data: {
@@ -652,11 +578,11 @@ export class ClientBot {
         ...(courseId ? { selectedCourseId: courseId } : {}),
       },
     });
-    await ctx.reply(t.questionPrompt, { reply_markup: backMenu(user.language) });
+    await ctx.reply(t.questionPrompt, { reply_markup: await backMenu(this.db, user.language) });
   }
 
   async trial(ctx: Context, user: User, courseId: string) {
-    const t = tr(user.language);
+    const t = (await botCopy(this.db, user.language));
     const request = await this.db.managerRequest.create({
       data: {
         userId: user.id,
@@ -670,18 +596,18 @@ export class ClientBot {
       requestId: request.id,
     });
     await this.notifyRequest(ctx, user, request.id, "📞 Новая заявка на пробный урок / созвон");
-    await ctx.reply(t.trialSent, { reply_markup: menuKeyboard(user.language) });
+    await ctx.reply(t.trialSent, { reply_markup: await menuKeyboard(this.db, user.language) });
   }
 
   async myCourses(ctx: Context, user: User) {
-    const t = tr(user.language);
+    const t = (await botCopy(this.db, user.language));
     const rows = await this.db.enrollment.findMany({
       where: { userId: user.id, status: "ACTIVE" },
       include: { course: true, tariff: true },
       orderBy: { createdAt: "desc" },
     });
     if (!rows.length) {
-      await ctx.reply(t.noCourses, { reply_markup: menuKeyboard(user.language) });
+      await ctx.reply(t.noCourses, { reply_markup: await menuKeyboard(this.db, user.language) });
       return;
     }
     for (const row of rows) {
@@ -691,11 +617,11 @@ export class ClientBot {
         row.telegramInviteLink &&
         (!row.inviteExpiresAt || row.inviteExpiresAt > new Date())
       )
-        k.url(user.language === "KZ" ? "🎓 Оқуға өту" : "🎓 Перейти к обучению", row.telegramInviteLink);
+        k.url(t.trainingLink, row.telegramInviteLink);
       else k.text(t.accessPending, "c:noop");
       await ctx.reply(
         "📚 " +
-          title(user.language, row.course) +
+          title(user.language, row.course, t) +
           (row.tariff
             ? "\n" +
               (user.language === "KZ"
@@ -705,7 +631,7 @@ export class ClientBot {
         { reply_markup: k },
       );
     }
-    await ctx.reply(t.mainMenu, { reply_markup: menuKeyboard(user.language) });
+    await ctx.reply(t.mainMenu, { reply_markup: await menuKeyboard(this.db, user.language) });
   }
 
   async callback(ctx: Context, data: string) {
@@ -714,7 +640,7 @@ export class ClientBot {
     if (prefix !== "c") return false;
     if (action === "noop") return true;
     if (action === "language") {
-      await ctx.reply(tr(user.language).chooseLanguage, { reply_markup: langKeyboard() });
+      await ctx.reply((await botCopy(this.db, user.language)).chooseLanguage, { reply_markup: await langKeyboard(this.db) });
       return true;
     }
     if (action === "lang") {
@@ -729,7 +655,7 @@ export class ClientBot {
       return true;
     }
     if (!user.language) {
-      await ctx.reply(tr(null).chooseLanguage, { reply_markup: langKeyboard() });
+      await ctx.reply((await botCopy(this.db, null)).chooseLanguage, { reply_markup: await langKeyboard(this.db) });
       return true;
     }
     if (action === "menu") await this.showMenu(ctx, user);
@@ -753,7 +679,7 @@ export class ClientBot {
       await this.event(user.id, "QUALIFICATION_ANSWERED", null, null, {
         experience: value,
       });
-      const t = tr(user.language);
+      const t = (await botCopy(this.db, user.language));
       const professionalMessage =
         value === "BEGINNER"
           ? t.professionalBenefit
@@ -777,7 +703,7 @@ export class ClientBot {
           currentFunnelStage: "QUESTIONNAIRE_COMPLETED",
         },
       });
-      const t = tr(user.language);
+      const t = (await botCopy(this.db, user.language));
       await ctx.reply(t.familyBenefit, {
         reply_markup: new InlineKeyboard().text(t.familyBonus, "c:bonus:family"),
       });
@@ -795,7 +721,7 @@ export class ClientBot {
       await this.event(user.id, "QUALIFICATION_ANSWERED", null, null, {
         beautyProfession: value,
       });
-      const t = tr(user.language);
+      const t = (await botCopy(this.db, user.language));
       const answer =
         value === "NAILS"
           ? t.beautyNails
@@ -864,8 +790,8 @@ export class ClientBot {
         data: { activePaymentId: payment.id, conversationStep: "RECEIPT" },
       });
       await ctx.reply(
-        isKaspiLink ? tr(user.language).sendKaspiPdf : tr(user.language).sendReceipt,
-        { reply_markup: backMenu(user.language) },
+        isKaspiLink ? (await botCopy(this.db, user.language)).sendKaspiPdf : (await botCopy(this.db, user.language)).sendReceipt,
+        { reply_markup: await backMenu(this.db, user.language) },
       );
     } else if (action === "ask") {
       await this.ask(ctx, user, value === "none" ? undefined : value);
@@ -965,7 +891,7 @@ export class ClientBot {
 
   async message(ctx: Context) {
     const user = await this.ensureUser(ctx);
-    const t = tr(user.language);
+    const t = (await botCopy(this.db, user.language));
     if (user.conversationStep === "RECEIPT") {
       if (!user.activePaymentId) throw new AppError("Активная оплата не найдена");
       const payment = await this.db.payment.findUniqueOrThrow({
@@ -1067,7 +993,7 @@ export class ClientBot {
               const updated = await this.db.user.findUniqueOrThrow({ where: { id: user.id } });
               await this.notifyPayment(ctx, updated, payment.id);
               await ctx.reply(t.kaspiReceiptReviewPending, {
-                reply_markup: menuKeyboard(user.language),
+                reply_markup: await menuKeyboard(this.db, user.language),
               });
               return true;
             }
@@ -1174,7 +1100,7 @@ export class ClientBot {
           const buttons = new InlineKeyboard();
           if (invite)
             buttons.url(
-              user.language === "KZ" ? "🎓 Оқуға өту" : "🎓 Перейти к обучению",
+              t.trainingLink,
               invite,
             ).row();
           buttons.text(t.mainMenu, "c:menu");
@@ -1228,7 +1154,7 @@ export class ClientBot {
         });
       });
       const updated = await this.db.user.findUniqueOrThrow({ where: { id: user.id } });
-      await ctx.reply(t.receiptReceived, { reply_markup: menuKeyboard(user.language) });
+      await ctx.reply(t.receiptReceived, { reply_markup: await menuKeyboard(this.db, user.language) });
       await this.notifyPayment(ctx, updated, payment.id);
       return true;
     }
@@ -1240,7 +1166,7 @@ export class ClientBot {
         return true;
       }
       if (text.length > 1500) {
-        await ctx.reply(user.language === "KZ" ? "Сұрақ тым ұзын. 1500 таңбаға дейін жазыңыз." : "Сообщение слишком длинное. До 1500 символов.");
+        await ctx.reply(t.questionTooLong);
         return true;
       }
       const request = await this.db.managerRequest.create({
@@ -1260,7 +1186,7 @@ export class ClientBot {
         requestId: request.id,
       });
       await this.notifyRequest(ctx, user, request.id, "💬 Новый вопрос клиента");
-      await ctx.reply(t.questionSent, { reply_markup: menuKeyboard(user.language) });
+      await ctx.reply(t.questionSent, { reply_markup: await menuKeyboard(this.db, user.language) });
       return true;
     }
     return false;
@@ -1276,7 +1202,7 @@ export class ClientBot {
           user?.language === "KZ"
             ? "Әрекетті орындау мүмкін болмады. Қайта көріңіз немесе басты мәзірге оралыңыз."
             : "Не удалось выполнить действие. Попробуйте ещё раз или вернитесь в главное меню.",
-          user ? { reply_markup: menuKeyboard(user.language) } : undefined,
+          user ? { reply_markup: await menuKeyboard(this.db, user.language) } : undefined,
         )
         .catch(() => {});
       console.error("Client callback failed:", safeError(error));
