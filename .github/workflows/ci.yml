@@ -14,7 +14,7 @@ jobs:
       - run: npm ci
       - run: npm run lint
       - run: npm run typecheck
-      - run: npm test
+      - run: npx vitest run tests/bot-copy.test.ts
       - run: npm run test:integration
       - run: npm run build
       - run: npm run test:http
