@@ -920,9 +920,7 @@ export class ClientBot {
         const maxAge = Number(process.env.KASPI_RECEIPT_MAX_AGE_MINUTES || "1440");
         if (!token || !merchantBin) {
           await ctx.reply(
-            user.language === "KZ"
-              ? "Автоматты Kaspi тексеруі әзірге толық бапталмаған. Әкімшіге хабар берілді."
-              : "Автоматическая проверка Kaspi пока не полностью настроена. Администратор уведомлён.",
+            t.kaspiNotReady,
           );
           return true;
         }
@@ -1000,21 +998,13 @@ export class ClientBot {
 
             const localized =
               verification.code === "amount_mismatch"
-                ? (user.language === "KZ"
-                    ? "Чектегі сома таңдалған тариф бағасына сәйкес келмейді."
-                    : "Сумма в чеке не совпадает со стоимостью выбранного тарифа.")
+                ? t.receiptAmountMismatch
                 : verification.code === "merchant_mismatch"
-                  ? (user.language === "KZ"
-                      ? "Чек басқа алушыға рәсімделген."
-                      : "Чек выписан другому получателю.")
+                  ? t.receiptMerchantMismatch
                   : verification.code === "too_old"
-                    ? (user.language === "KZ"
-                        ? "Бұл чек тексеру мерзімінен ескі."
-                        : "Этот чек слишком старый для текущей оплаты.")
+                    ? t.receiptTooOld
                     : verification.code === "future_date"
-                      ? (user.language === "KZ"
-                          ? "Чек күні дұрыс емес."
-                          : "Дата или время чека некорректны.")
+                      ? t.receiptFutureDate
                       : verification.message;
             await ctx.reply("❌ " + localized.replace(/^❌\s*/, ""));
             return true;
@@ -1199,9 +1189,7 @@ export class ClientBot {
       const user = await this.ensureUser(ctx).catch(() => null);
       await ctx
         .reply(
-          user?.language === "KZ"
-            ? "Әрекетті орындау мүмкін болмады. Қайта көріңіз немесе басты мәзірге оралыңыз."
-            : "Не удалось выполнить действие. Попробуйте ещё раз или вернитесь в главное меню.",
+          user ? (await botCopy(this.db, user.language)).callbackFailed : "Не удалось выполнить действие. Попробуйте ещё раз или вернитесь в главное меню.",
           user ? { reply_markup: await menuKeyboard(this.db, user.language) } : undefined,
         )
         .catch(() => {});
