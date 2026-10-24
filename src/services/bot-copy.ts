@@ -116,7 +116,7 @@ function validateText(key: string, value: string) {
 export async function startCopyEdit(
   db: PrismaClient, adminId: string, language: "RU" | "KZ", key: string,
 ) {
-  await requireAdmin(db, adminId, "settings", true);
+  await requireAdmin(db, adminId, "copy", true);
   if (!Object.hasOwn(defaultBotCopy[language], key))
     throw new AppError("Неизвестный текст");
   await db.adminConversationState.upsert({
@@ -136,7 +136,7 @@ export async function saveCopyMessage(
 ) {
   if (typeof text !== "string") throw new AppError("Пришлите текстовое сообщение");
   return db.$transaction(async (tx) => {
-    await requireAdmin(tx, adminId, "settings", true);
+    await requireAdmin(tx, adminId, "copy", true);
     const state = await tx.adminConversationState.findUnique({ where: { adminId } });
     if (!state || state.flowType !== "botcopy" || state.expiresAt < new Date())
       throw new AppError("Редактирование устарело. Откройте текст заново.");
@@ -166,7 +166,7 @@ export async function resetCopy(
   db: PrismaClient, adminId: string, language: "RU" | "KZ", key: string,
 ) {
   await db.$transaction(async (tx) => {
-    await requireAdmin(tx, adminId, "settings", true);
+    await requireAdmin(tx, adminId, "copy", true);
     if (!Object.hasOwn(defaultBotCopy[language] ?? {}, key))
       throw new AppError("Неизвестный текст");
     const stored = await tx.setting.findUnique({ where: { key: settingKey(language) } });
