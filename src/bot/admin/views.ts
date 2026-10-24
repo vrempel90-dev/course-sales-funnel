@@ -468,7 +468,7 @@ export class AdminViews {
     const k = new InlineKeyboard();
     for (let i = page * perPage; i < Math.min(keys.length, (page + 1) * perPage); i++) {
       const key = keys[i];
-      const preview = t[key].replace(/\\s+/g, " ").slice(0, 32);
+      const preview = t[key].replace(/\s+/g, " ").slice(0, 32);
       button(k, "✏️ " + key + " · " + preview, "a:copyview:" + language + ":" + i).row();
     }
     if (page > 0) button(k, "⬅️", "a:copy:" + language + ":" + (page - 1));
@@ -476,8 +476,8 @@ export class AdminViews {
     await display(
       ctx,
       "✏️ Тексты бота — " + language +
-        "\\nСтраница " + (page + 1) + " из " + pages +
-        "\\nВыберите сообщение или текст кнопки для редактирования. Изменения применяются к новым сообщениям.",
+        "\nСтраница " + (page + 1) + " из " + pages +
+        "\nВыберите сообщение или текст кнопки для редактирования. Изменения применяются к новым сообщениям.",
       back(k, "a:menu:copy"),
     );
   }
@@ -495,8 +495,8 @@ export class AdminViews {
     await display(
       ctx,
       "✏️ " + language + " · " + key +
-        "\\n\\nТекущий текст:\\n" + actual +
-        (actual === original ? "\\n\\n(По умолчанию)" : "\\n\\n(Изменён)"),
+        "\n\nТекущий текст:\n" + actual +
+        (actual === original ? "\n\n(По умолчанию)" : "\n\n(Изменён)"),
       back(k, "a:copy:" + language + ":" + Math.floor(Number(index) / 7)),
     );
   }
