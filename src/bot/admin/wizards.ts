@@ -14,6 +14,7 @@ import {
 import { button } from "../keyboards/admin";
 import { display } from "../messages";
 import { pagination } from "../../utils/pagination";
+import { saveCopyMessage, copyKeys } from "../../services/bot-copy";
 export const labels: Record<string, string> = {
   true: "Да",
   false: "Нет",
@@ -151,6 +152,18 @@ export class WizardView {
       where: { adminId: admin.id },
     });
     if (!raw) return false;
+    if (raw.flowType === "botcopy") {
+      const saved = await saveCopyMessage(
+        this.db, admin.id, ctx.message?.text, ctx.update.update_id,
+      );
+      const index = copyKeys(saved.language).indexOf(saved.key);
+      await ctx.reply("✅ Текст сохранён. Новые сообщения бота будут использовать его.", {
+        reply_markup: new InlineKeyboard().text(
+          "⬅️ К тексту", "a:copyview:" + saved.language + ":" + index,
+        ),
+      });
+      return true;
+    }
     const state = await this.flows.state(admin.id);
     if (payload(state).lastUpdateId === ctx.update.update_id) {
       if (state.flowType === "search") return state;
