@@ -69,7 +69,7 @@ export function copyKeys(language: "RU" | "KZ"): string[] {
   return Object.keys(defaultBotCopy[language]);
 }
 export function copyKey(language: "RU" | "KZ", index: string): string {
-  if (!/^\\d{1,3}$/.test(index)) throw new AppError("Неизвестный текст");
+  if (!/^\d{1,3}$/.test(index)) throw new AppError("Неизвестный текст");
   const key = copyKeys(language)[Number(index)];
   if (!key) throw new AppError("Неизвестный текст");
   return key;
@@ -96,7 +96,7 @@ export async function botCopy(
   return { ...defaults, ...safe };
 }
 export function fillText(source: string, variables: Record<string, string>): string {
-  return source.replace(/\\{([a-z]+)\\}/g, (whole, key: string) =>
+  return source.replace(/\{([a-z]+)\}/g, (whole, key: string) =>
     Object.hasOwn(variables, key) ? variables[key] : whole,
   );
 }
