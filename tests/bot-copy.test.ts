@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { permitted } from "../src/services/auth";
 import type { PrismaClient } from "@prisma/client";
 import {
   botCopy, copyKey, copyKeys, defaultBotCopy, fillText,
@@ -60,5 +61,14 @@ describe("editable Telegram copy", () => {
     expect(fillText("Курс {course}, {tariff}: {amount} ₸", {
       course: "Классический", tariff: "SELF", amount: "20 000",
     })).toBe("Курс Классический, SELF: 20 000 ₸");
+  });
+});
+
+describe("bot copy permissions", () => {
+  it("lets owners and administrators write, but denies managers", () => {
+    expect(permitted("OWNER", "copy", true)).toBe(true);
+    expect(permitted("ADMIN", "copy", true)).toBe(true);
+    expect(permitted("MANAGER", "copy", true)).toBe(false);
+    expect(permitted("ADMIN", "settings", true)).toBe(false);
   });
 });
