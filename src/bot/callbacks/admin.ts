@@ -12,7 +12,7 @@ import { WizardView } from "../admin/wizards";
 import { back, button, sections } from "../keyboards/admin";
 import { display } from "../messages";
 import { pageIndex } from "../../utils/pagination";
-import { tr } from "../client/i18n";
+import { botCopy, copyKey, startCopyEdit, resetCopy } from "../../services/bot-copy";
 function section(value: string): Section {
   if (!Object.hasOwn(sections, value)) throw new AppError("Неизвестный раздел");
   return value as Section;
@@ -53,7 +53,7 @@ export async function callback(
           include: { user: true },
         });
         if (payment) {
-          const t = tr(payment.user.language);
+          const t = await botCopy(db, payment.user.language);
           await ctx.api
             .sendMessage(
               payment.user.telegramId.toString(),
@@ -114,6 +114,36 @@ export async function callback(
     case "history":
       await views.history(ctx, admin, args[0], pageIndex(args[1]));
       break;
+    case "copy":
+      await flows.cancel(admin.id);
+      await views.copyList(ctx, admin, args[0], pageIndex(args[1]));
+      break;
+    case "copyview":
+      await flows.cancel(admin.id);
+      await views.copyDetail(ctx, admin, args[0], args[1]);
+      break;
+    case "copyedit": {
+      const lang = args[0];
+      if (lang !== "RU" && lang !== "KZ") throw new AppError("Неизвестный язык");
+      const key = copyKey(lang, args[1]);
+      await startCopyEdit(db, admin.id, lang, key);
+      await display(
+        ctx,
+        "✏️ " + lang + " · " + key +
+          "\nПришлите новый текст одним сообщением. Для отмены используйте /cancel." +
+          "\nТекущий текст не изменится до отправки нового.",
+        back(new InlineKeyboard(), "a:copyview:" + lang + ":" + args[1]),
+      );
+      break;
+    }
+    case "copyreset": {
+      const lang = args[0];
+      if (lang !== "RU" && lang !== "KZ") throw new AppError("Неизвестный язык");
+      const key = copyKey(lang, args[1]);
+      await resetCopy(db, admin.id, lang, key);
+      await views.copyDetail(ctx, admin, lang, args[1]);
+      break;
+    }
     case "status":
       await views.status(ctx, admin);
       break;
@@ -154,7 +184,7 @@ export async function callback(
           db,
           new GrammyGateway(ctx.api),
         ).retry(enrollment.id, admin.id);
-        const t = tr(before.user.language);
+        const t = await botCopy(db, before.user.language);
         if (access.accessStatus === "GRANTED" && access.telegramInviteLink) {
           await ctx.api
             .sendMessage(before.user.telegramId.toString(), t.approved, {
@@ -216,7 +246,7 @@ export async function callback(
           include: { user: true },
         });
         if (rejected) {
-          const t = tr(rejected.user.language);
+          const t = await botCopy(db, rejected.user.language);
           await ctx.api
             .sendMessage(
               rejected.user.telegramId.toString(),

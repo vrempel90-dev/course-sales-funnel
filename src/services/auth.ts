@@ -12,7 +12,8 @@ export type Section =
   | "requests"
   | "staff"
   | "requisites"
-  | "settings";
+  | "settings"
+  | "copy";
 export function permitted(role: Role, section: Section, write = false) {
   if (role === "OWNER") return true;
   if (["staff", "requisites", "settings"].includes(section)) return false;

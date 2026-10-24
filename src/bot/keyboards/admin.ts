@@ -13,6 +13,7 @@ export const sections: Record<Section, string> = {
   staff: "👨‍💼 Администраторы",
   requisites: "💰 Реквизиты",
   settings: "⚙️ Настройки",
+  copy: "✏️ Тексты бота",
 };
 export function button(k: InlineKeyboard, text: string, data: string) {
   if (Buffer.byteLength(data, "utf8") > 64)
