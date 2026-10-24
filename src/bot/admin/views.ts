@@ -13,6 +13,7 @@ import {
 import { back, button, home, pager, sections } from "../keyboards/admin";
 import { display } from "../messages";
 import { pagination } from "../../utils/pagination";
+import { botCopy, copyKey, copyKeys, defaultBotCopy } from "../../services/bot-copy";
 const filterLabels: Record<string, string> = {
   new: "Новые клиенты",
   waiting: "Ожидают оплаты",
@@ -67,7 +68,10 @@ export class AdminViews {
       await display(ctx, await this.repo.stats(), back(k));
       return;
     }
-    if (section === "requisites") {
+    if (section === "copy") {
+      button(k, "🇷🇺 Русские тексты", "a:copy:RU:0").row();
+      button(k, "🇰🇿 Қазақша мәтіндер", "a:copy:KZ:0");
+    } else if (section === "requisites") {
       button(k, "🇰🇿 Казахстан · KZT", "a:card:requisites:KZ").row();
       button(k, "🇷🇺 Россия · RUB", "a:card:requisites:RU");
     } else if (section === "settings") {
@@ -452,6 +456,51 @@ export class AdminViews {
       back(k, "a:card:clients:" + id),
     );
   }
+
+  async copyList(ctx: Context, admin: AdminUser, language: string, page: number) {
+    await requireAdmin(this.db, admin.id, "copy");
+    if (language !== "RU" && language !== "KZ") throw new AppError("Неизвестный язык");
+    const keys = copyKeys(language);
+    const perPage = 7;
+    const pages = Math.max(1, Math.ceil(keys.length / perPage));
+    if (page < 0 || page >= pages) throw new AppError("Неизвестная страница");
+    const t = await botCopy(this.db, language);
+    const k = new InlineKeyboard();
+    for (let i = page * perPage; i < Math.min(keys.length, (page + 1) * perPage); i++) {
+      const key = keys[i];
+      const preview = t[key].replace(/\\s+/g, " ").slice(0, 32);
+      button(k, "✏️ " + key + " · " + preview, "a:copyview:" + language + ":" + i).row();
+    }
+    if (page > 0) button(k, "⬅️", "a:copy:" + language + ":" + (page - 1));
+    if (page < pages - 1) button(k, "➡️", "a:copy:" + language + ":" + (page + 1));
+    await display(
+      ctx,
+      "✏️ Тексты бота — " + language +
+        "\\nСтраница " + (page + 1) + " из " + pages +
+        "\\nВыберите сообщение или текст кнопки для редактирования. Изменения применяются к новым сообщениям.",
+      back(k, "a:menu:copy"),
+    );
+  }
+
+  async copyDetail(ctx: Context, admin: AdminUser, language: string, index: string) {
+    await requireAdmin(this.db, admin.id, "copy");
+    if (language !== "RU" && language !== "KZ") throw new AppError("Неизвестный язык");
+    const key = copyKey(language, index);
+    const actual = (await botCopy(this.db, language))[key];
+    const original = defaultBotCopy[language][key];
+    const k = new InlineKeyboard();
+    button(k, "✏️ Изменить текст", "a:copyedit:" + language + ":" + index).row();
+    if (actual !== original)
+      button(k, "↩️ Вернуть исходный", "a:copyreset:" + language + ":" + index).row();
+    await display(
+      ctx,
+      "✏️ " + language + " · " + key +
+        "\\n\\nТекущий текст:\\n" + actual +
+        (actual === original ? "\\n\\n(По умолчанию)" : "\\n\\n(Изменён)"),
+      back(k, "a:copy:" + language + ":" + Math.floor(Number(index) / 7)),
+    );
+  }
+
   async status(ctx: Context, admin: AdminUser) {
     await requireAdmin(this.db, admin.id, "settings");
     let connected = true;
